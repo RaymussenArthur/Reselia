@@ -18,6 +18,7 @@ from matplotlib.patches import Patch
 from matplotlib.cm import ScalarMappable
 import folium
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 import osmnx as ox
 from sklearn.ensemble import RandomForestClassifier
@@ -630,6 +631,26 @@ if "results" not in st.session_state:
 
 # ── Run pipeline ──────────────────────────────────────────────────────────────
 if run_btn:
+    # Programmatically collapse the sidebar immediately upon execution safely
+    components.html(
+        """
+        <script>
+        setTimeout(function() {
+            const sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
+            if (sidebar && sidebar.getBoundingClientRect().width > 50) {
+                const btn = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"] button') || 
+                            window.parent.document.querySelector('[data-testid="collapsedControl"]') || 
+                            window.parent.document.querySelector('button[kind="header"][aria-label*="sidebar"]') || 
+                            window.parent.document.querySelector('.stSidebar button[kind="header"]');
+                if (btn) btn.click();
+            }
+        }, 50);
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
     with st.status("Running RESILIA pipeline...", expanded=True) as status:
         try:
             st.write("① Fetching road network from OpenStreetMap...")
@@ -679,30 +700,6 @@ if run_btn:
 # ── Results ───────────────────────────────────────────────────────────────────
 if st.session_state.results:
     r = st.session_state.results
-
-    # Auto-collapse sidebar via JS click on the collapse button
-    st.markdown("""
-    <script>
-    (function() {
-      function tryCollapse() {
-        // Try multiple selectors for different Streamlit versions
-        var btn = document.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
-                  document.querySelector('[data-testid="collapsedControl"]') ||
-                  document.querySelector('button[kind="header"][aria-label*="sidebar"]') ||
-                  document.querySelector('.stSidebar button[kind="header"]');
-        if (btn) {
-          var sidebar = document.querySelector('[data-testid="stSidebar"]');
-          if (sidebar && sidebar.getBoundingClientRect().width > 50) {
-            btn.click();
-          }
-        } else {
-          setTimeout(tryCollapse, 300);
-        }
-      }
-      setTimeout(tryCollapse, 600);
-    })();
-    </script>
-    """, unsafe_allow_html=True)
 
     if not r["live"]:
         st.warning("BMKG API unavailable — stressor weight defaulted to 0.85 (Heavy Rain fallback).")
