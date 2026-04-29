@@ -1,6 +1,7 @@
 """
 RESILIA — Resilience & Infrastructure Logistics Analyzer
-Streamlit Dashboard v1.0 — Streamlit Cloud deployment
+Streamlit Dashboard v2.0 — Competition Edition
+Aligned with resilia_main notebook v1.1
 """
 
 import copy
@@ -16,7 +17,6 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.patches import Patch
 from matplotlib.cm import ScalarMappable
-import seaborn as sns
 import folium
 import streamlit as st
 from streamlit_folium import st_folium
@@ -839,9 +839,18 @@ if st.session_state.results:
 
         # Correlation heatmap
         corr = df[FEAT_COLS + ['flood_label']].corr()
-        sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", center=0,
-                    ax=axes[0, 0], linewidths=0.5, square=True,
-                    cbar_kws={"shrink": 0.8}, annot_kws={"size": 9})
+        corr_vals = corr.values
+        im = axes[0, 0].imshow(corr_vals, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
+        plt.colorbar(im, ax=axes[0, 0], shrink=0.8)
+        clabels = list(corr.columns)
+        axes[0, 0].set_xticks(range(len(clabels)))
+        axes[0, 0].set_yticks(range(len(clabels)))
+        axes[0, 0].set_xticklabels(clabels, rotation=45, ha="right", fontsize=7)
+        axes[0, 0].set_yticklabels(clabels, fontsize=7)
+        for i in range(len(clabels)):
+            for j in range(len(clabels)):
+                axes[0, 0].text(j, i, f"{corr_vals[i, j]:.2f}",
+                                ha="center", va="center", fontsize=7, color=C_TEXT)
         axes[0, 0].set_title("Feature Correlation Matrix")
 
         # Class balance
@@ -857,11 +866,17 @@ if st.session_state.results:
             axes[0, 1].text(bar.get_x() + bar.get_width() / 2,
                             v + 10, f"{v:,}", ha='center', fontsize=10, fontweight='bold', color=C_TEXT)
 
-        # Elevation by class
-        sns.boxplot(data=df, x='label_str', y='elevation',
-                    order=['Low Risk', 'High Risk'],
-                    palette={'Low Risk': C_TEAL, 'High Risk': C_RED},
-                    ax=axes[0, 2])
+        # Elevation by class (pure matplotlib boxplot)
+        low_elev  = df[df['flood_label'] == 0]['elevation'].values
+        high_elev = df[df['flood_label'] == 1]['elevation'].values
+        bp = axes[0, 2].boxplot([low_elev, high_elev], labels=['Low Risk', 'High Risk'],
+                                patch_artist=True, widths=0.45,
+                                medianprops=dict(color=C_TEXT, linewidth=1.5))
+        bp['boxes'][0].set_facecolor(C_TEAL)
+        bp['boxes'][1].set_facecolor(C_RED)
+        for element in ['whiskers', 'caps', 'fliers']:
+            for item in bp[element]:
+                item.set_color(C_MUTED)
         axes[0, 2].axhline(FLOOD_THRESHOLD_M, color=C_RED, linestyle='--',
                            linewidth=1.2, label=f'Threshold ({FLOOD_THRESHOLD_M} m)')
         axes[0, 2].set_title("Elevation by Class")
