@@ -31,7 +31,6 @@ from sklearn.metrics import (
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="RESILIA — Urban Risk Engine",
-    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -174,29 +173,6 @@ st.markdown("""
   .badge-critical { background: #1a0404; color: #ff7070; border: 1px solid #550e0e;
                     box-shadow: 0 0 16px rgba(255,80,80,0.15); }
 
-  /* ── Expander ── */
-  div[data-testid="stExpander"] {
-    background: #070d14 !important;
-    border: 1px solid #0c1828 !important;
-    border-radius: 2px !important;
-  }
-  div[data-testid="stExpander"] summary {
-    color: #3d5a70 !important;
-    font-family: 'Space Mono', monospace !important;
-    font-size: 10px !important;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  /* ── Alert ── */
-  div[data-testid="stAlert"] {
-    background: #110d04 !important;
-    border: 1px solid #332508 !important;
-    border-radius: 2px;
-    font-family: 'Space Mono', monospace;
-    font-size: 11px;
-  }
-
   /* ── Tab styling ── */
   .stTabs [data-baseweb="tab-list"] {
     background: #070d14;
@@ -233,64 +209,10 @@ st.markdown("""
     margin: 24px 0;
   }
 
-  /* ── Caption ── */
-  .stCaption {
-    color: #3a6a8a !important;
-    font-family: 'Space Mono', monospace !important;
-    font-size: 9px !important;
-    letter-spacing: 0.08em;
-  }
-
-  /* ── Status widget ── */
-  div[data-testid="stStatusWidget"] {
-    background: #070d14 !important;
-    border: 1px solid #0c1828 !important;
-    border-radius: 2px !important;
-    font-family: 'Space Mono', monospace !important;
-  }
-
-  /* ── Dataframe ── */
-  .stDataFrame {
-    border: 1px solid #0c1828 !important;
-    border-radius: 2px !important;
-  }
-
-  /* ── Selectbox / radio ── */
-  .stSelectbox > div > div,
-  .stRadio > div {
-    background: #070d14 !important;
-    border-color: #0c1828 !important;
-  }
-
   /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 3px; }
   ::-webkit-scrollbar-track { background: #040810; }
   ::-webkit-scrollbar-thumb { background: #0d1e2e; border-radius: 2px; }
-
-  /* ── Info panel card ── */
-  .info-card {
-    background: #070d14;
-    border: 1px solid #0c1828;
-    border-radius: 2px;
-    padding: 18px 22px;
-    margin-bottom: 12px;
-    font-family: 'Space Mono', monospace;
-    font-size: 10px;
-    line-height: 1.9;
-    color: #2e4a5e;
-  }
-  .info-card .label {
-    color: #1d3a50;
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-    font-size: 8px;
-    margin-bottom: 8px;
-    display: block;
-  }
-  .info-card .value {
-    color: #7aabcc;
-    font-size: 11px;
-  }
 </style>
 """, unsafe_allow_html=True)
 
@@ -346,13 +268,13 @@ TIER_COLOR  = {"LOW": "#2da44e", "MODERATE": "#d49a10", "HIGH": "#e8554e", "CRIT
 TIER_BG     = {"LOW": "#041208", "MODERATE": "#110d04", "HIGH": "#110404", "CRITICAL": "#1a0404"}
 TIER_BORDER = {"LOW": "#133326", "MODERATE": "#332508", "HIGH": "#330c0c", "CRITICAL": "#550e0e"}
 
-# Custom colormap matching notebook
 CMAP_RESILIA = mcolors.LinearSegmentedColormap.from_list(
     "resilia", ["#0b1a2e", "#1e3a5f", "#4a7fa5", "#c0622a", "#e5534b"], N=256
 )
 
+# NOTE: Elevation is deliberately EXCLUDED from FEAT_COLS to prevent data leakage.
 FEAT_COLS = ['degree_centrality', 'betweenness_centrality', 'closeness_centrality']
-FEAT_COLS_DISPLAY = ['elevation'] + FEAT_COLS  # elevation kept for EDA/visualization only
+FEAT_COLS_DISPLAY = ['elevation'] + FEAT_COLS  # Used strictly for EDA only
 
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
@@ -379,8 +301,6 @@ def inject_elevation(G, area_name):
 def build_ml_model(G):
     """
     Build RF model using 3 graph-topology features only (NO elevation).
-    Elevation is the label source — including it causes data leakage/overfit.
-    Uses predict_proba for continuous risk scores.
     """
     degree_c      = nx.degree_centrality(G)
     betweenness_c = nx.betweenness_centrality(G, k=200, normalized=True, seed=42)
@@ -396,6 +316,8 @@ def build_ml_model(G):
     } for n, d in G.nodes(data=True)]
 
     df = pd.DataFrame(records)
+    
+    # ML Input matrix strictly relies on topology to avoid leakage
     X  = df[FEAT_COLS].values
     y  = df["flood_label"].values
 
@@ -420,7 +342,7 @@ def build_ml_model(G):
     )
     cm = confusion_matrix(y_test, y_pred)
 
-    # Continuous risk score (predict_proba)
+    # Continuous risk score via predict_proba
     risk_scores      = rf.predict_proba(X)[:, 1]
     df['risk_score'] = risk_scores
     df['ml_pred']    = rf.predict(X)
@@ -461,7 +383,6 @@ def compute_risk(G, stressor_weight):
 
 
 def compute_resilience(G, vulnerable_nodes):
-    """Network resilience analysis — matches notebook Cell 18."""
     G_und = G.to_undirected()
     baseline_comps = nx.number_connected_components(G_und)
     baseline_lcc   = len(max(nx.connected_components(G_und), key=len))
@@ -485,7 +406,6 @@ def compute_resilience(G, vulnerable_nodes):
 
 
 def rank_chokepoints(df):
-    """Critical chokepoint ranking — matches notebook Cell 20."""
     critical_df = df[df['ml_pred'] == 1].copy()
     critical_df = critical_df.sort_values('betweenness_centrality', ascending=False).reset_index(drop=True)
     critical_df.index += 1
@@ -559,6 +479,51 @@ def build_folium_map(G, edges, vulnerable, area, weather, sfp, tier, f1, n_criti
     return m
 
 
+def render_static_risk_maps(r):
+    """Renders the fixed Module 7a logic within the Streamlit main page."""
+    fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+    
+    # Safe rendering logic, cloning the geometric index
+    nodes_gdf = r["nodes"].copy()
+    nodes_gdf["risk_score"] = nodes_gdf.index.map(lambda n: r["G"].nodes[n].get('risk_score', 0.0))
+    nodes_gdf["vulnerability"] = nodes_gdf.index.map(lambda n: r["G"].nodes[n].get("vulnerability", "Low"))
+
+    # 7a Left: Heatmap
+    ax = axes[0]
+    r["edges"].plot(ax=ax, color="#1d2a38", linewidth=0.6, alpha=0.85)
+    sc = ax.scatter(nodes_gdf.geometry.x, nodes_gdf.geometry.y,
+                    c=nodes_gdf['risk_score'], cmap='plasma', s=12, alpha=0.9, zorder=5)
+    
+    cbar = plt.colorbar(sc, ax=ax, shrink=0.6, pad=0.02)
+    cbar.set_label('P(High Risk)', color=C_MUTED)
+    cbar.ax.yaxis.set_tick_params(color=C_MUTED)
+    plt.setp(cbar.ax.yaxis.get_ticklabels(), color=C_MUTED)
+    
+    ax.set_title("Continuous Risk Gradient (predict_proba)", color=C_TEXT)
+    ax.set_axis_off()
+
+    # 7a Right: Binary
+    ax2 = axes[1]
+    low_gdf = nodes_gdf[nodes_gdf["vulnerability"] == "Low"]
+    high_gdf = nodes_gdf[nodes_gdf["vulnerability"] == "High"]
+    
+    r["edges"].plot(ax=ax2, color="#1d2a38", linewidth=0.6, alpha=0.85)
+    
+    if not low_gdf.empty:
+        low_gdf.plot(ax=ax2, color=C_BLUE, markersize=4, alpha=0.5)
+    if not high_gdf.empty:
+        high_gdf.plot(ax=ax2, color=C_RED, markersize=12, alpha=0.9)
+    
+    ax2.legend(handles=[Patch(facecolor=C_RED, label=f"High Risk ({len(high_gdf)})"),
+                        Patch(facecolor=C_BLUE, label=f"Low Risk ({len(low_gdf)})")], 
+               loc="lower right", facecolor=DARK_BG, edgecolor=DARK_LINE, labelcolor=C_TEXT)
+    ax2.set_title("Binary Classification Mapping", color=C_TEXT)
+    ax2.set_axis_off()
+
+    plt.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
@@ -578,6 +543,13 @@ with st.sidebar:
 
     st.markdown('<div class="section-header">Configuration</div>', unsafe_allow_html=True)
     selected_area = st.selectbox("Study Area", list(AREA_CONFIGS.keys()), index=0)
+
+    st.markdown('<div class="section-header">Visualization Control</div>', unsafe_allow_html=True)
+    vis_mode = st.radio(
+        "Select Layer Format",
+        ["Interactive Folium (7b)", "Static Risk Maps (7a)"],
+        help="7a: Dual-map static analysis (Heatmap & Classification). 7b: Interactive Leaflet engine."
+    )
 
     st.markdown('<div class="section-header">Execute</div>', unsafe_allow_html=True)
     run_btn = st.button("▶  Run Analysis Pipeline", use_container_width=True, type="primary")
@@ -631,7 +603,6 @@ if "results" not in st.session_state:
 
 # ── Run pipeline ──────────────────────────────────────────────────────────────
 if run_btn:
-    # Programmatically collapse the sidebar immediately upon execution safely
     components.html(
         """
         <script>
@@ -733,16 +704,19 @@ if st.session_state.results:
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── Inline Spatial Map (always visible) ───────────────────────────────────
-    st.markdown('<div class="section-header">Spatial Vulnerability Map</div>', unsafe_allow_html=True)
+    # ── Inline Spatial Map (Controlled by Sidebar Toggle) ─────────────────────
+    st.markdown(f'<div class="section-header">Spatial Output — {vis_mode.split("(")[0].strip()}</div>', unsafe_allow_html=True)
 
-    fmap = build_folium_map(
-        r["G"], r["edges"], r["vulnerable"],
-        r["area"], r["weather"], r["sfp"], r["tier"], r["f1"],
-        len(r["vulnerable"])
-    )
-    st_folium(fmap, width="100%", height=520, returned_objects=[])
-    st.caption("Node color & size encodes RF predict_proba risk score (0–1) · Hover for node details")
+    if "Interactive" in vis_mode:
+        fmap = build_folium_map(
+            r["G"], r["edges"], r["vulnerable"],
+            r["area"], r["weather"], r["sfp"], r["tier"], r["f1"],
+            len(r["vulnerable"])
+        )
+        st_folium(fmap, width="100%", height=520, returned_objects=[])
+        st.caption("Node color & size encodes RF predict_proba risk score (0–1) · Hover for node details")
+    else:
+        render_static_risk_maps(r)
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -773,7 +747,7 @@ if st.session_state.results:
         axes[0].set_title("Confusion Matrix")
         axes[0].set_facecolor(DARK_SURF)
 
-        # Feature Importance (4 features from notebook)
+        # Feature Importance
         imp_df = pd.DataFrame({
             "feature"   : FEAT_COLS,
             "importance": r["rf"].feature_importances_
@@ -815,7 +789,7 @@ if st.session_state.results:
         fig3, axes = plt.subplots(2, 3, figsize=(16, 10))
         fig3.suptitle("EDA — RESILIA Feature Matrix", fontsize=13, fontweight="bold", y=1.01)
 
-        # Correlation heatmap (pure matplotlib)
+        # Correlation heatmap
         corr = df[FEAT_COLS_DISPLAY + ['flood_label']].corr()
         corr_vals = corr.values
         im = axes[0, 0].imshow(corr_vals, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
@@ -844,7 +818,7 @@ if st.session_state.results:
             axes[0, 1].text(bar.get_x() + bar.get_width() / 2,
                             v + 10, f"{v:,}", ha='center', fontsize=10, fontweight='bold', color=C_TEXT)
 
-        # Elevation by class (pure matplotlib boxplot)
+        # Elevation by class
         low_elev  = df[df['flood_label'] == 0]['elevation'].values
         high_elev = df[df['flood_label'] == 1]['elevation'].values
         bp = axes[0, 2].boxplot([low_elev, high_elev], labels=['Low Risk', 'High Risk'],
@@ -916,7 +890,7 @@ if st.session_state.results:
         for i, (lbl, v) in enumerate(zip(comp_labels, comp_values)):
             axes[1].text(i, v + 10, f"{v:,}", ha='center', fontsize=9, color=C_TEXT)
 
-        # Risk score distribution: high vs low (fixed bins for visibility)
+        # Risk score distribution: high vs low
         _df_r = r["df"]
         bins = np.linspace(0, 1, 25)
         axes[2].hist(_df_r[_df_r['ml_pred'] == 0]['risk_score'], bins=bins,
