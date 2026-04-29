@@ -577,7 +577,6 @@ with st.sidebar:
 
     st.markdown('<div class="section-header">Configuration</div>', unsafe_allow_html=True)
     selected_area = st.selectbox("Study Area", list(AREA_CONFIGS.keys()), index=0)
-    view_mode     = st.radio("Map Visualization", ["Continuous Risk (Folium)", "Binary Classification (Matplotlib)"], index=0)
 
     st.markdown('<div class="section-header">Execute</div>', unsafe_allow_html=True)
     run_btn = st.button("▶  Run Analysis Pipeline", use_container_width=True, type="primary")
@@ -681,6 +680,15 @@ if run_btn:
 if st.session_state.results:
     r = st.session_state.results
 
+    # Collapse sidebar automatically so map gets full width
+    st.markdown("""
+    <style>
+      section[data-testid="stSidebar"] { width: 0px !important; min-width: 0px !important;
+        overflow: hidden !important; transition: width 0.3s ease; }
+      section[data-testid="stSidebar"] > div { display: none !important; }
+      button[data-testid="collapsedControl"] { display: flex !important; }
+    </style>""", unsafe_allow_html=True)
+
     if not r["live"]:
         st.warning("BMKG API unavailable — stressor weight defaulted to 0.85 (Heavy Rain fallback).")
 
@@ -716,61 +724,13 @@ if st.session_state.results:
     # ── Inline Spatial Map (always visible) ───────────────────────────────────
     st.markdown('<div class="section-header">Spatial Vulnerability Map</div>', unsafe_allow_html=True)
 
-    # Build node GeoDataFrame once for both map panels
-    _nodes_list = list(r["G"].nodes())
-    _risk_sp    = [r["G"].nodes[n].get("risk_score", 0.0) for n in _nodes_list]
-    _vuln_sp    = [r["G"].nodes[n].get("vulnerability", "Low") for n in _nodes_list]
-    _nodes_gdf  = gpd.GeoDataFrame(
-        {"risk_score": _risk_sp, "vulnerability": _vuln_sp},
-        geometry=r["nodes"].geometry, crs=r["nodes"].crs
+    fmap = build_folium_map(
+        r["G"], r["edges"], r["vulnerable"],
+        r["area"], r["weather"], r["sfp"], r["tier"], r["f1"],
+        len(r["vulnerable"])
     )
-    _low_gdf  = _nodes_gdf[_nodes_gdf["vulnerability"] == "Low"]
-    _high_gdf = _nodes_gdf[_nodes_gdf["vulnerability"] == "High"]
-
-    if view_mode == "Continuous Risk (Folium)":
-        fmap = build_folium_map(
-            r["G"], r["edges"], r["vulnerable"],
-            r["area"], r["weather"], r["sfp"], r["tier"], r["f1"],
-            len(r["vulnerable"])
-        )
-        st_folium(fmap, width="100%", height=520, returned_objects=[])
-        st.caption("Node color & size encodes RF predict_proba risk score (0–1) · Hover for node details")
-    else:
-        # Two side-by-side static maps
-        fig_map, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(16, 6))
-        fig_map.suptitle(
-            f"Flood Vulnerability — {r['area']}  ·  SFP {r['sfp']:.2f}%  [{r['tier']}]",
-            fontsize=12, fontweight="bold"
-        )
-
-        # Left: continuous risk score heatmap
-        r["edges"].plot(ax=ax_l, color="#1d2a38", linewidth=0.6, alpha=0.85, aspect=None)
-        sc = ax_l.scatter(
-            _nodes_gdf.geometry.x, _nodes_gdf.geometry.y,
-            c=_nodes_gdf["risk_score"], cmap=CMAP_RESILIA,
-            s=8, alpha=0.9, zorder=5, vmin=0, vmax=1
-        )
-        cbar = plt.colorbar(sc, ax=ax_l, shrink=0.65, pad=0.02)
-        cbar.set_label("RF Risk Score  P(High)", labelpad=8)
-        ax_l.set_title("Continuous Risk Score — RF predict_proba")
-        ax_l.set_xlabel("Longitude"); ax_l.set_ylabel("Latitude")
-
-        # Right: binary High/Low classification
-        r["edges"].plot(ax=ax_r, color="#1d2a38", linewidth=0.6, alpha=0.85, aspect=None)
-        if len(_low_gdf):
-            ax_r.scatter(_low_gdf.geometry.x, _low_gdf.geometry.y,
-                         c=C_BLUE, s=4, alpha=0.5, zorder=4, label=f"Low Risk ({len(_low_gdf):,})")
-        if len(_high_gdf):
-            ax_r.scatter(_high_gdf.geometry.x, _high_gdf.geometry.y,
-                         c=C_RED, s=10, alpha=0.9, zorder=5, label=f"High Risk ({len(_high_gdf):,})")
-        ax_r.legend(fontsize=9, loc="lower right",
-                    facecolor=DARK_BG, edgecolor=DARK_LINE, labelcolor=C_TEXT)
-        ax_r.set_title(f"Binary Classification  ·  F1={r['f1']:.3f}  ·  {r['weather']}")
-        ax_r.set_xlabel("Longitude"); ax_r.set_ylabel("Latitude")
-
-        plt.tight_layout()
-        st.pyplot(fig_map, use_container_width=True)
-        st.caption(f"High-risk nodes: {len(_high_gdf):,} / {len(_nodes_gdf):,}  ·  Risk Score threshold 0.5")
+    st_folium(fmap, width="100%", height=520, returned_objects=[])
+    st.caption("Node color & size encodes RF predict_proba risk score (0–1) · Hover for node details")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab1, tab2, tab3, tab4 = st.tabs([
