@@ -1,7 +1,6 @@
 """
 RESILIA — Resilience & Infrastructure Logistics Analyzer
-Streamlit Dashboard v2.0 — Competition Edition
-Aligned with resilia_main notebook v1.1
+Streamlit Dashboard v1.0 — Streamlit Cloud deployment
 """
 
 import copy
@@ -351,7 +350,8 @@ CMAP_RESILIA = mcolors.LinearSegmentedColormap.from_list(
     "resilia", ["#0b1a2e", "#1e3a5f", "#4a7fa5", "#c0622a", "#e5534b"], N=256
 )
 
-FEAT_COLS = ['elevation', 'degree_centrality', 'betweenness_centrality', 'closeness_centrality']
+FEAT_COLS = ['degree_centrality', 'betweenness_centrality', 'closeness_centrality']
+FEAT_COLS_DISPLAY = ['elevation'] + FEAT_COLS  # elevation kept for EDA/visualization only
 
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
@@ -377,8 +377,9 @@ def inject_elevation(G, area_name):
 
 def build_ml_model(G):
     """
-    Build RF model using 4 features (elevation + 3 graph centralities),
-    predict_proba for continuous risk scores — matches notebook Cell 8–10.
+    Build RF model using 3 graph-topology features only (NO elevation).
+    Elevation is the label source — including it causes data leakage/overfit.
+    Uses predict_proba for continuous risk scores.
     """
     degree_c      = nx.degree_centrality(G)
     betweenness_c = nx.betweenness_centrality(G, k=200, normalized=True, seed=42)
@@ -402,8 +403,8 @@ def build_ml_model(G):
     )
 
     rf = RandomForestClassifier(
-        n_estimators=200, max_depth=10, min_samples_leaf=3,
-        class_weight='balanced', random_state=42, n_jobs=-1
+        n_estimators=150, max_depth=6, min_samples_leaf=5,
+        max_features="sqrt", class_weight='balanced', random_state=42, n_jobs=-1
     )
     rf.fit(X_train, y_train)
 
@@ -685,17 +686,19 @@ if st.session_state.results:
 
     # ── KPI Row ───────────────────────────────────────────────────────────────
     st.markdown('<div class="section-header">Key Risk Indicators</div>', unsafe_allow_html=True)
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Study Area",       r["area"])
-    c2.metric("Total Nodes",      f"{r['n_total']:,}")
-    c3.metric("High-Risk Nodes",  f"{len(r['vulnerable']):,}",
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Study Area",      r["area"])
+    c2.metric("Total Nodes",     f"{r['n_total']:,}")
+    c3.metric("High-Risk Nodes", f"{len(r['vulnerable']):,}",
               delta=f"{len(r['vulnerable'])/r['n_total']*100:.1f}% exposed",
               delta_color="inverse")
-    c4.metric("RF F1 (weighted)", f"{r['f1']:.4f}")
-    c5.metric("Weather",          r["weather"])
-    c6.metric("SFP",              f"{r['sfp']:.2f}%")
-    c7.metric("Connectivity Loss", f"{r['resilience']['connectivity_loss']:.1f}%",
-              delta_color="inverse")
+    c4.metric("SFP",             f"{r['sfp']:.2f}%")
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("RF F1 (weighted)",    f"{r['f1']:.3f}")
+    c6.metric("CV F1 (5-fold)",      f"{r['cv_scores'].mean():.3f} ± {r['cv_scores'].std():.3f}")
+    c7.metric("Connectivity Loss",   f"{r['resilience']['connectivity_loss']:.1f}%")
+    c8.metric("Weather",             r["weather"][:18])
 
     # Risk badge
     st.markdown("<div style='margin:18px 0 8px;'>", unsafe_allow_html=True)
@@ -708,74 +711,50 @@ if st.session_state.results:
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # ── Inline Spatial Map (always visible) ───────────────────────────────────
+    st.markdown('<div class="section-header">Spatial Vulnerability Map</div>', unsafe_allow_html=True)
+
+    if view_mode == "Continuous Risk (Folium)":
+        fmap = build_folium_map(
+            r["G"], r["edges"], r["vulnerable"],
+            r["area"], r["weather"], r["sfp"], r["tier"], r["f1"],
+            len(r["vulnerable"])
+        )
+        st_folium(fmap, width="100%", height=520, returned_objects=[])
+        st.caption("Node color & size encodes RF predict_proba risk score (0–1) · Hover for node details")
+    else:
+        nodes_list = list(r["G"].nodes())
+        risk_scores_sp = [r["G"].nodes[n].get('risk_score', 0.0) for n in nodes_list]
+        nodes_gdf = gpd.GeoDataFrame(
+            {"risk_score": risk_scores_sp,
+             "vulnerability": [r["G"].nodes[n].get("vulnerability") for n in nodes_list]},
+            geometry=r["nodes"].geometry, crs=r["nodes"].crs
+        )
+        fig_map, ax_map = plt.subplots(figsize=(14, 6))
+        fig_map.suptitle(f"Flood Vulnerability — {r['area']} · SFP {r['sfp']:.2f}% [{r['tier']}]",
+                     fontsize=12, fontweight="bold")
+        r["edges"].plot(ax=ax_map, color="#1d2a38", linewidth=0.6, alpha=0.85, aspect=None)
+        sc = ax_map.scatter(
+            nodes_gdf.geometry.x, nodes_gdf.geometry.y,
+            c=nodes_gdf['risk_score'], cmap=CMAP_RESILIA,
+            s=8, alpha=0.9, zorder=5, vmin=0, vmax=1
+        )
+        cbar = plt.colorbar(sc, ax=ax_map, shrink=0.6, pad=0.02)
+        cbar.set_label('RF Risk Score P(High)', labelpad=10)
+        ax_map.set_xlabel("Longitude"); ax_map.set_ylabel("Latitude")
+        plt.tight_layout()
+        st.pyplot(fig_map, use_container_width=True)
+
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "Spatial Risk Map",
+    tab1, tab2, tab3, tab4 = st.tabs([
         "Model Evaluation",
         "EDA — Feature Analysis",
         "Network Resilience",
         "Critical Chokepoints",
     ])
 
-    # ── Tab 1: Spatial Map ────────────────────────────────────────────────────
+    # ── Tab 1: Model Evaluation ───────────────────────────────────────────────
     with tab1:
-        st.markdown('<div class="section-header">Spatial Vulnerability Map</div>', unsafe_allow_html=True)
-
-        if view_mode == "Continuous Risk (Folium)":
-            fmap = build_folium_map(
-                r["G"], r["edges"], r["vulnerable"],
-                r["area"], r["weather"], r["sfp"], r["tier"], r["f1"],
-                len(r["vulnerable"])
-            )
-            st_folium(fmap, width="100%", height=580, returned_objects=[])
-            st.caption("Node color & size encodes RF predict_proba risk score (0–1) · Hover for node details")
-        else:
-            nodes_list = list(r["G"].nodes())
-            risk_scores_sp = [r["G"].nodes[n].get('risk_score', 0.0) for n in nodes_list]
-            nodes_gdf = gpd.GeoDataFrame(
-                {"risk_score": risk_scores_sp,
-                 "vulnerability": [r["G"].nodes[n].get("vulnerability") for n in nodes_list]},
-                geometry=r["nodes"].geometry, crs=r["nodes"].crs
-            )
-
-            fig, axes = plt.subplots(1, 2, figsize=(16, 7))
-            fig.suptitle(f"Flood Vulnerability — {r['area']} · SFP {r['sfp']:.2f}% [{r['tier']}]",
-                         fontsize=12, fontweight="bold", y=1.01)
-
-            # Continuous risk score
-            ax = axes[0]
-            r["edges"].plot(ax=ax, color="#1d2a38", linewidth=0.6, alpha=0.85, aspect=None)
-            sc = ax.scatter(
-                nodes_gdf.geometry.x, nodes_gdf.geometry.y,
-                c=nodes_gdf['risk_score'], cmap=CMAP_RESILIA,
-                s=8, alpha=0.9, zorder=5, vmin=0, vmax=1
-            )
-            cbar = plt.colorbar(sc, ax=ax, shrink=0.6, pad=0.02)
-            cbar.set_label('RF Flood Risk Score  P(High)', labelpad=10)
-            ax.set_title("Continuous Risk Score — RF predict_proba")
-            ax.set_xlabel("Longitude")
-            ax.set_ylabel("Latitude")
-
-            # Binary
-            ax2 = axes[1]
-            low_gdf  = nodes_gdf[nodes_gdf["vulnerability"] == "Low"]
-            high_gdf = nodes_gdf[nodes_gdf["vulnerability"] == "High"]
-            r["edges"].plot(ax=ax2, color="#1d2a38", linewidth=0.6, alpha=0.85, aspect=None)
-            low_gdf.plot(ax=ax2,  color=C_BLUE, markersize=3,  alpha=0.5, aspect=None)
-            high_gdf.plot(ax=ax2, color=C_RED,  markersize=9,  alpha=0.9, aspect=None)
-            ax2.legend(handles=[
-                Patch(facecolor=C_RED,  label=f"High Risk ({len(high_gdf):,} nodes)"),
-                Patch(facecolor=C_BLUE, label=f"Low Risk  ({len(low_gdf):,} nodes)"),
-            ], fontsize=9, loc="lower right")
-            ax2.set_title(f"Binary Classification · F1={r['f1']:.4f} · {r['weather']}")
-            ax2.set_xlabel("Longitude")
-            ax2.set_ylabel("Latitude")
-
-            plt.tight_layout()
-            st.pyplot(fig, use_container_width=True)
-
-    # ── Tab 2: Model Evaluation ───────────────────────────────────────────────
-    with tab2:
         st.markdown('<div class="section-header">Model Evaluation — Random Forest Baseline</div>',
                     unsafe_allow_html=True)
 
@@ -826,8 +805,8 @@ if st.session_state.results:
                                            target_names=['Low Risk', 'High Risk'])
             st.code(report, language=None)
 
-    # ── Tab 3: EDA ────────────────────────────────────────────────────────────
-    with tab3:
+    # ── Tab 2: EDA ────────────────────────────────────────────────────────────
+    with tab2:
         st.markdown('<div class="section-header">Exploratory Data Analysis — Feature Matrix</div>',
                     unsafe_allow_html=True)
 
@@ -838,7 +817,7 @@ if st.session_state.results:
         fig3.suptitle("EDA — RESILIA Feature Matrix", fontsize=13, fontweight="bold", y=1.01)
 
         # Correlation heatmap (pure matplotlib)
-        corr = df[FEAT_COLS + ['flood_label']].corr()
+        corr = df[FEAT_COLS_DISPLAY + ['flood_label']].corr()
         corr_vals = corr.values
         im = axes[0, 0].imshow(corr_vals, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
         plt.colorbar(im, ax=axes[0, 0], shrink=0.8)
@@ -898,8 +877,8 @@ if st.session_state.results:
         plt.tight_layout()
         st.pyplot(fig3, use_container_width=True)
 
-    # ── Tab 4: Network Resilience ─────────────────────────────────────────────
-    with tab4:
+    # ── Tab 3: Network Resilience ─────────────────────────────────────────────
+    with tab3:
         res = r["resilience"]
         st.markdown('<div class="section-header">Network Resilience — Flood Impact Simulation</div>',
                     unsafe_allow_html=True)
@@ -938,23 +917,25 @@ if st.session_state.results:
         for i, (lbl, v) in enumerate(zip(comp_labels, comp_values)):
             axes[1].text(i, v + 10, f"{v:,}", ha='center', fontsize=9, color=C_TEXT)
 
-        # Risk score distribution: high vs low
-        df = r["df"]
-        axes[2].hist(df[df['ml_pred'] == 0]['risk_score'], bins=30,
-                     color=C_BLUE, alpha=0.75, label='Low Risk', edgecolor=DARK_BG)
-        axes[2].hist(df[df['ml_pred'] == 1]['risk_score'], bins=30,
-                     color=C_RED, alpha=0.75, label='High Risk', edgecolor=DARK_BG)
-        axes[2].axvline(0.5, color=C_YELLOW, linewidth=1.2, linestyle='--', label='Threshold 0.5')
+        # Risk score distribution: high vs low (fixed bins for visibility)
+        _df_r = r["df"]
+        bins = np.linspace(0, 1, 25)
+        axes[2].hist(_df_r[_df_r['ml_pred'] == 0]['risk_score'], bins=bins,
+                     color=C_BLUE, alpha=0.7, label=f"Low Risk ({int((_df_r['ml_pred']==0).sum())})", edgecolor=DARK_BG)
+        axes[2].hist(_df_r[_df_r['ml_pred'] == 1]['risk_score'], bins=bins,
+                     color=C_RED, alpha=0.7, label=f"High Risk ({int((_df_r['ml_pred']==1).sum())})", edgecolor=DARK_BG)
+        axes[2].axvline(0.5, color=C_YELLOW, linewidth=1.5, linestyle='--', label='Decision boundary')
         axes[2].set_title("Risk Score Distribution by Class")
-        axes[2].set_xlabel("RF Risk Score  P(High)")
+        axes[2].set_xlabel("RF Risk Score  P(High Risk)")
         axes[2].set_ylabel("Node Count")
+        axes[2].set_xlim(0, 1)
         axes[2].legend(fontsize=9)
 
         plt.tight_layout()
         st.pyplot(fig4, use_container_width=True)
 
-    # ── Tab 5: Chokepoints ────────────────────────────────────────────────────
-    with tab5:
+    # ── Tab 4: Chokepoints ────────────────────────────────────────────────────
+    with tab4:
         cdf = r["critical_df"]
         st.markdown('<div class="section-header">Critical Chokepoint Ranking</div>',
                     unsafe_allow_html=True)
@@ -1021,7 +1002,7 @@ if st.session_state.results:
                      text-transform:uppercase;letter-spacing:0.14em;">
           {r['tier']} RISK
         </span>
-        <span style="color:#2e4a5e;font-size:9px;letter-spacing:0.06em;">
+        <span style="color:#5a8aaa;font-size:9px;letter-spacing:0.06em;">
           SFP {r['sfp']:.2f}% &nbsp;·&nbsp; {r['weather']} &nbsp;·&nbsp;
           stressor={r['stressor_w']:.2f} &nbsp;·&nbsp;
           connectivity loss={r['resilience']['connectivity_loss']:.1f}%
