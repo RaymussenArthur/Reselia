@@ -112,7 +112,7 @@ st.markdown("""
     background: linear-gradient(90deg, #0d5fa6 0%, #0d5fa620 100%);
   }
   div[data-testid="metric-container"] [data-testid="stMetricLabel"] p {
-    color: #2e4a5e !important;
+    color: #4a7a9a !important;
     font-family: 'Space Mono', monospace !important;
     font-size: 9px !important;
     text-transform: uppercase;
@@ -137,7 +137,7 @@ st.markdown("""
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.24em;
-    color: #1d5a8a;
+    color: #2d7ab0;
     display: flex;
     align-items: center;
     gap: 14px;
@@ -235,7 +235,7 @@ st.markdown("""
 
   /* ── Caption ── */
   .stCaption {
-    color: #1d3a50 !important;
+    color: #3a6a8a !important;
     font-family: 'Space Mono', monospace !important;
     font-size: 9px !important;
     letter-spacing: 0.08em;
@@ -567,7 +567,7 @@ with st.sidebar:
         RESILIA
       </div>
       <div style="font-family:'Space Mono',monospace;font-size:8px;
-                  color:#1d3a50;margin-top:6px;text-transform:uppercase;
+                  color:#3a6a8a;margin-top:6px;text-transform:uppercase;
                   letter-spacing:0.2em;">
         Urban Flood Risk Engine v2.0
       </div>
@@ -585,13 +585,13 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("""
     <div style="font-family:'Space Mono',monospace;font-size:9px;
-                color:#1d3a50;line-height:2.2;">
-      <span style="color:#2e4a5e;text-transform:uppercase;letter-spacing:0.14em;
+                color:#3a6a8a;line-height:2.2;">
+      <span style="color:#5a8aaa;text-transform:uppercase;letter-spacing:0.14em;
                    font-size:8px;">Data Sources</span><br>
       OSM via osmnx (ODbL)<br>
       BMKG Public API<br>
       DEM: simulated (PoC)<br><br>
-      <span style="color:#2e4a5e;text-transform:uppercase;letter-spacing:0.14em;
+      <span style="color:#5a8aaa;text-transform:uppercase;letter-spacing:0.14em;
                    font-size:8px;">ML Model</span><br>
       Random Forest (Phase 1)<br>
       Phase 2: GraphSAGE / GAT<br>
@@ -613,7 +613,7 @@ st.markdown("""
     </div>
   </div>
   <div style="font-family:'Space Mono',monospace;font-size:9px;
-              color:#1d3a50;margin-top:8px;letter-spacing:0.06em;">
+              color:#3a6a8a;margin-top:8px;letter-spacing:0.06em;">
     Flood vulnerability assessment &nbsp;·&nbsp; OpenStreetMap · Random Forest · BMKG telemetry
     &nbsp;·&nbsp; Network resilience simulation
   </div>
@@ -837,7 +837,7 @@ if st.session_state.results:
         fig3, axes = plt.subplots(2, 3, figsize=(16, 10))
         fig3.suptitle("EDA — RESILIA Feature Matrix", fontsize=13, fontweight="bold", y=1.01)
 
-        # Correlation heatmap
+        # Correlation heatmap (pure matplotlib)
         corr = df[FEAT_COLS + ['flood_label']].corr()
         corr_vals = corr.values
         im = axes[0, 0].imshow(corr_vals, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
@@ -1047,17 +1047,17 @@ else:
     st.markdown("""
     <div style="padding: 120px 0 100px;text-align:center;">
       <div style="font-family:'Space Mono',monospace;font-size:9px;
-                  text-transform:uppercase;letter-spacing:0.28em;color:#0d2a40;
+                  text-transform:uppercase;letter-spacing:0.28em;color:#2d6a9f;
                   margin-bottom:24px;">
         System Idle — Awaiting Input
       </div>
-      <div style="font-family:'Barlow Condensed',sans-serif;font-size:36px;font-weight:800;
-                  color:#0d1e2e;line-height:1.15;max-width:480px;margin:0 auto 20px;
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:40px;font-weight:800;
+                  color:#4a7fa8;line-height:1.15;max-width:520px;margin:0 auto 20px;
                   text-transform:uppercase;letter-spacing:-0.01em;">
         Select a study area and run the analysis pipeline.
       </div>
       <div style="font-family:'Space Mono',monospace;font-size:9px;
-                  color:#0d2a40;letter-spacing:0.08em;">
+                  color:#2d5a7a;letter-spacing:0.08em;">
         OSM &nbsp;·&nbsp; Random Forest &nbsp;·&nbsp; BMKG &nbsp;·&nbsp; Network Resilience
       </div>
     </div>""", unsafe_allow_html=True)
