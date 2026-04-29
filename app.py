@@ -536,7 +536,7 @@ with st.sidebar:
       <div style="font-family:'Space Mono',monospace;font-size:8px;
                   color:#3a6a8a;margin-top:6px;text-transform:uppercase;
                   letter-spacing:0.2em;">
-        Urban Flood Risk Engine v2.0
+        Urban Flood Risk Engine v1.0
       </div>
       <div style="margin-top:10px;height:1px;background:linear-gradient(90deg,#0d5fa6,transparent);"></div>
     </div>""", unsafe_allow_html=True)
@@ -547,8 +547,8 @@ with st.sidebar:
     st.markdown('<div class="section-header">Visualization Control</div>', unsafe_allow_html=True)
     vis_mode = st.radio(
         "Select Layer Format",
-        ["Interactive Folium (7b)", "Static Risk Maps (7a)"],
-        help="7a: Dual-map static analysis (Heatmap & Classification). 7b: Interactive Leaflet engine."
+        ["Interactive Folium", "Static Risk Maps"],
+        help="Dual-map static analysis (Heatmap & Classification). Interactive Leaflet engine."
     )
 
     st.markdown('<div class="section-header">Execute</div>', unsafe_allow_html=True)
@@ -572,7 +572,7 @@ with st.sidebar:
     </div>""", unsafe_allow_html=True)
 
 
-# ── Header ────────────────────────────────────────────────────────────────────
+# ── Header 
 st.markdown("""
 <div style="padding: 10px 0 4px;">
   <div style="display:flex;align-items:baseline;gap:14px;">
