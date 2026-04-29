@@ -696,9 +696,10 @@ if st.session_state.results:
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("RF F1 (weighted)",    f"{r['f1']:.3f}")
-    c6.metric("CV F1 (5-fold)",      f"{r['cv_scores'].mean():.3f} ± {r['cv_scores'].std():.3f}")
+    c6.metric("CV F1 mean",          f"{r['cv_scores'].mean():.3f}",
+              delta=f"std {r['cv_scores'].std():.3f}")
     c7.metric("Connectivity Loss",   f"{r['resilience']['connectivity_loss']:.1f}%")
-    c8.metric("Weather",             r["weather"][:18])
+    c8.metric("Weather",             r["weather"][:20])
 
     # Risk badge
     st.markdown("<div style='margin:18px 0 8px;'>", unsafe_allow_html=True)
