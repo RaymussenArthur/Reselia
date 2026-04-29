@@ -32,7 +32,7 @@ st.set_page_config(
     page_title="RESILIA — Urban Risk Engine",
     page_icon=None,
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed" if "results" in st.session_state and st.session_state.results else "expanded",
 )
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
