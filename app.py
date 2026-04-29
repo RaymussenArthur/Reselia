@@ -32,7 +32,7 @@ st.set_page_config(
     page_title="RESILIA — Urban Risk Engine",
     page_icon=None,
     layout="wide",
-    initial_sidebar_state="collapsed" if "results" in st.session_state and st.session_state.results else "expanded",
+    initial_sidebar_state="expanded",
 )
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
@@ -680,14 +680,29 @@ if run_btn:
 if st.session_state.results:
     r = st.session_state.results
 
-    # Collapse sidebar automatically so map gets full width
+    # Auto-collapse sidebar via JS click on the collapse button
     st.markdown("""
-    <style>
-      section[data-testid="stSidebar"] { width: 0px !important; min-width: 0px !important;
-        overflow: hidden !important; transition: width 0.3s ease; }
-      section[data-testid="stSidebar"] > div { display: none !important; }
-      button[data-testid="collapsedControl"] { display: flex !important; }
-    </style>""", unsafe_allow_html=True)
+    <script>
+    (function() {
+      function tryCollapse() {
+        // Try multiple selectors for different Streamlit versions
+        var btn = document.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
+                  document.querySelector('[data-testid="collapsedControl"]') ||
+                  document.querySelector('button[kind="header"][aria-label*="sidebar"]') ||
+                  document.querySelector('.stSidebar button[kind="header"]');
+        if (btn) {
+          var sidebar = document.querySelector('[data-testid="stSidebar"]');
+          if (sidebar && sidebar.getBoundingClientRect().width > 50) {
+            btn.click();
+          }
+        } else {
+          setTimeout(tryCollapse, 300);
+        }
+      }
+      setTimeout(tryCollapse, 600);
+    })();
+    </script>
+    """, unsafe_allow_html=True)
 
     if not r["live"]:
         st.warning("BMKG API unavailable — stressor weight defaulted to 0.85 (Heavy Rain fallback).")
