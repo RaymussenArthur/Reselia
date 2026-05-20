@@ -34,6 +34,42 @@ warnings.filterwarnings("ignore")
 st.set_page_config(page_title="RESELIA v2", page_icon="🛰️",
                    layout="wide", initial_sidebar_state="expanded")
 
+# ── Sidebar collapse button text ──────────────────────────────────────────
+components.html("""
+<script>
+(function() {
+    function fixBtn() {
+        try {
+            var doc = window.parent.document;
+            doc.querySelectorAll('button').forEach(function(btn) {
+                if (btn.innerText && btn.innerText.trim().startsWith('keyboard')) {
+                    btn.style.fontSize = '0';
+                    btn.style.color = 'transparent';
+                    btn.setAttribute('data-fixed', '1');
+                    var after = document.createElement('style');
+                    after.textContent = 
+                        'button[data-fixed="1"] { font-size: 0 !important; color: transparent !important; }' +
+                        'button[data-fixed="1"]::after { content: "<<"; font-size: 12px !important; ' +
+                        'color: #58a6ff !important; font-family: monospace !important; font-weight: 700; }';
+                    doc.head.appendChild(after);
+                }
+            });
+        } catch(e) {}
+    }
+    fixBtn();
+    setTimeout(fixBtn, 300);
+    setTimeout(fixBtn, 800);
+    setTimeout(fixBtn, 1500);
+    try {
+        var observer = new MutationObserver(fixBtn);
+        observer.observe(window.parent.document.body, {
+            childList: true, subtree: true
+        });
+    } catch(e) {}
+})();
+</script>
+""", height=0, scrolling=False)
+
 # Session state init
 for k, v in [("last_params", {}), ("results", None), ("dirty", False)]:
     if k not in st.session_state:
