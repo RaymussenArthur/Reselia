@@ -590,6 +590,28 @@ with st.sidebar:
         ── Pickle persistence<br>──────────────────<br>OSM / ODbL &#183; BMKG Public</div></div>""",
                 unsafe_allow_html=True)
 
+# ── Auto-collapse sidebar after run ───────────────────────────────────────────
+if st.session_state.pop("_collapse_sidebar", False):
+    components.html("""
+    <script>
+    (function() {
+        try {
+            var doc = window.parent.document;
+            var selectors = [
+                'button[data-testid="collapsedControl"]',
+                '[data-testid="stSidebarCollapsedControl"] button',
+                'section[data-testid="stSidebar"] button[kind="header"]',
+                '[data-testid="stSidebar"] ~ div button'
+            ];
+            for (var i = 0; i < selectors.length; i++) {
+                var btn = doc.querySelector(selectors[i]);
+                if (btn) { btn.click(); break; }
+            }
+        } catch(e) { console.log('collapse err:', e); }
+    })();
+    </script>
+    """, height=0, scrolling=False)
+
 # ── Header ─────────────────────────────────────────────────────────────────────
 st.markdown("""<div style="padding:0 0 24px 0;">
   <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px;">
@@ -606,6 +628,7 @@ st.markdown("""<div style="padding:0 0 24px 0;">
 # ── Pipeline ───────────────────────────────────────────────────────────────────
 if run_btn:
     st.session_state.last_params = current_params
+    st.session_state["_collapse_sidebar"] = True
     with st.status("Running RESELIA v2 pipeline...", expanded=True) as ps:
         try:
             st.write("**[1/8]** Fetching road network...")
