@@ -4,11 +4,11 @@
 
 ---
 
-**Nomor SPK :** SPK/BPBD/202605191036/LOW
-**Tanggal   :** 19 May 2026, 10:36 WIB
+**Nomor SPK :** SPK/BPBD/202605191403/LOW
+**Tanggal   :** 19 May 2026, 14:03 WIB
 **Instansi  :** Badan Penanggulangan Bencana Daerah (BPBD) DKI Jakarta
 **Wilayah   :** Kelurahan Kemayoran, Jakarta Utara
-**Run ID    :** `a8040b24d3de472d8f0c2420efdf24f3`
+**Run ID    :** `20260519_140130`
 
 ---
 
@@ -60,7 +60,7 @@ Berdasarkan asesmen AI di atas, dengan ini diperintahkan kepada Tim Lapangan BPB
 1. **Prioritas Utama:** Kerahkan armada pompa darurat ke episenter EP-1 dalam **waktu 2 jam** sejak diterbitkannya SPK ini.
 2. **Koordinasi:** Hubungi 257 fasilitas kritis yang teridentifikasi (rumah sakit, sekolah, pasar) untuk prosedur evakuasi standby.
 3. **Pemantauan:** Perbarui data BMKG setiap 15 menit; laporkan perubahan tier risiko ke Posko Utama.
-4. **Dokumentasi:** Semua tindakan lapangan dicatat dengan referensi Run ID `a8040b24d3de472d8f0c2420efdf24f3` untuk audit.
+4. **Dokumentasi:** Semua tindakan lapangan dicatat dengan referensi Run ID `20260519_140130` untuk audit.
 
 ### IV. DASAR HUKUM
 
@@ -72,4 +72,4 @@ Berdasarkan asesmen AI di atas, dengan ini diperintahkan kepada Tim Lapangan BPB
 
 *Dokumen ini dihasilkan secara otomatis oleh RESILIA v2.0 Phase 2 AI Engine.*
 *Memerlukan validasi dan penandatanganan oleh Kepala BPBD sebelum dieksekusi.*
-*Audit trail tersedia di MLflow Run ID: `a8040b24d3de472d8f0c2420efdf24f3`*
+*Audit trail tersedia di file: `resilia_model_metadata.json` (Run ID: `20260519_140130`)*

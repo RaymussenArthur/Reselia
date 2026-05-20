@@ -1,0 +1,82 @@
+{
+  "run_id": "20260519_140130",
+  "model_type": "GAT-Augmented GradientBoosting",
+  "gat_hops": 2,
+  "gbt_n_estimators": 300,
+  "gbt_learning_rate": 0.05,
+  "gbt_max_depth": 5,
+  "features": [
+    "elevation",
+    "degree_centrality",
+    "betweenness_centrality",
+    "closeness_centrality",
+    "poi_criticality",
+    "clustering_coefficient",
+    "pagerank"
+  ],
+  "n_features": 7,
+  "flood_threshold_m": 2.5,
+  "dbscan_eps_m": 250,
+  "dbscan_min_samples": 3,
+  "train_test_split": 0.8,
+  "bbox": {
+    "north": -6.14,
+    "south": -6.18,
+    "east": 106.88,
+    "west": 106.84,
+    "center": [
+      -6.16,
+      106.86
+    ]
+  },
+  "metrics": {
+    "accuracy": 0.8569,
+    "f1_weighted": 0.8557,
+    "f1_macro": 0.8482,
+    "auc_roc": 0.9331,
+    "cv_f1_mean": 0.856,
+    "cv_f1_std": 0.0128,
+    "f1_baseline_phase1": 0.7808,
+    "f1_improvement_pp": 7.49,
+    "network_resilience": 0.534,
+    "sfp_percent": 2.85,
+    "n_high_risk_nodes": 1319,
+    "n_epicenters": 3,
+    "n_pois_ingested": 257,
+    "stressor_weight": 0.05,
+    "optuna_best_cv_f1": 0.87,
+    "optuna_best_test_f1": 0.8563,
+    "optuna_n_trials": 20
+  },
+  "tags": {
+    "deployment_target": "BPBD-Kemayoran",
+    "data_sovereignty": "on-premise",
+    "phase": "Phase2",
+    "risk_tier": "LOW",
+    "weather_condition": "Cerah",
+    "run_timestamp": "2026-05-19T14:01:30"
+  },
+  "shap_mean_abs": {
+    "elevation": 3.192169,
+    "degree_centrality": 0.228438,
+    "betweenness_centrality": 0.166642,
+    "closeness_centrality": 0.171572,
+    "poi_criticality": 0.147999,
+    "clustering_coefficient": 0.074871,
+    "pagerank": 0.163124
+  },
+  "optuna_best_params": {
+    "n_estimators": 250,
+    "learning_rate": 0.010862120103842448,
+    "max_depth": 5,
+    "min_samples_leaf": 5,
+    "subsample": 0.6430104032327739,
+    "max_features": "sqrt"
+  },
+  "data_drift": {
+    "n_drifted_features": 1.0,
+    "drift_share": 0.125,
+    "n_features": 7,
+    "dataset_drift_detected": true
+  }
+}

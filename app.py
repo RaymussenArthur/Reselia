@@ -1,1017 +1,1021 @@
 """
-RESILIA — Resilience & Infrastructure Logistics Analyzer
-Streamlit Dashboard v1.0 — Streamlit Cloud deployment
+RESELIA v2.0 — v3 PATCH
+Fixes applied:
+  [v3-1] BMKG: proper adm4 param, graceful fallback (no false "error" banner)
+  [v3-2] Font contrast: all dim text boosted for readability
+  [v3-3] Run button: pulses blue when params change, grey "up to date" when fresh
+  [v3-4] KPI carousel: proper iframe HTML, no raw-HTML bleed
+  [v3-5] Plot loading: st.spinner on every heavy chart render
+  [v3-6] Map zoom: auto-computed from dist value per area
+  [v3-7] Red nodes: threshold raised to 0.65 — only truly high-risk nodes are red
+  [v3-8] POI fallback: added entries for all 10 areas
 """
-
-import copy
-import warnings
-warnings.filterwarnings("ignore")
-
-import requests
-import numpy as np
-import pandas as pd
-import networkx as nx
-import geopandas as gpd
+from __future__ import annotations
+import math, os, pickle, warnings, requests
+import numpy as np, pandas as pd, polars as pl
+import networkx as nx, geopandas as gpd
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from matplotlib.patches import Patch
-from matplotlib.cm import ScalarMappable
+import matplotlib.patches as mpatches
 import folium
+from folium.plugins import HeatMap
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 import osmnx as ox
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import DBSCAN
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
-from sklearn.metrics import (
-    f1_score, accuracy_score, classification_report,
-    confusion_matrix, ConfusionMatrixDisplay
-)
+from sklearn.metrics import (f1_score, accuracy_score, roc_auc_score,
+                              confusion_matrix, ConfusionMatrixDisplay, classification_report)
 
-# ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="RESILIA — Urban Risk Engine",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+warnings.filterwarnings("ignore")
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="RESELIA v2", page_icon="🛰️",
+                   layout="wide", initial_sidebar_state="expanded")
+
+# Session state init
+for k, v in [("last_params", {}), ("results", None), ("dirty", False)]:
+    if k not in st.session_state:
+        st.session_state[k] = v
+
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Barlow:wght@300;400;500;600;700;800&family=Barlow+Condensed:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
+*, html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
+.stApp { background-color: #05090f; color: #c9d1d9; }
+section[data-testid="stSidebar"] { background-color: #090e18; border-right: 1px solid #1e2a3a; }
+section[data-testid="stSidebar"] * { font-family: 'IBM Plex Mono', monospace !important; font-size: 11px; }
+div[data-testid="metric-container"] {
+  background: linear-gradient(140deg,#090e18 0%,#0d1525 100%);
+  border: 1px solid #1e2a3a; border-top: 2px solid #1f6feb; border-radius: 2px; padding: 16px 18px;
+}
+div[data-testid="metric-container"] label {
+  color: #58a6ff !important; font-family: 'IBM Plex Mono',monospace !important;
+  font-size: 8px !important; text-transform: uppercase; letter-spacing: .2em; font-weight: 700;
+}
+div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
+  color: #e6edf3 !important; font-family: 'IBM Plex Mono',monospace !important;
+  font-size: 18px !important; font-weight: 700;
+}
+div[data-testid="metric-container"] div[data-testid="stMetricDelta"] {
+  font-family: 'IBM Plex Mono',monospace !important; font-size: 9px !important;
+}
+/* v3-3: dirty run button pulses */
+.run-btn-dirty > button {
+  background: linear-gradient(135deg,#1f6feb,#388bfd) !important;
+  color: #fff !important; border: none !important;
+  box-shadow: 0 0 0 2px #388bfd, 0 0 22px rgba(56,139,253,.55) !important;
+  animation: pulse-btn 1.4s infinite;
+}
+@keyframes pulse-btn {
+  0%  { box-shadow: 0 0 0 2px #388bfd, 0 0 12px rgba(56,139,253,.35); }
+  50% { box-shadow: 0 0 0 2px #58a6ff, 0 0 28px rgba(88,166,255,.65); }
+  100%{ box-shadow: 0 0 0 2px #388bfd, 0 0 12px rgba(56,139,253,.35); }
+}
+.run-btn-clean > button {
+  background: #0d1525 !important; color: #6e7681 !important;
+  border: 1px solid #1e2a3a !important; box-shadow: none !important;
+}
+.stButton > button {
+  border-radius: 2px; font-family: 'IBM Plex Mono',monospace; font-size: 11px;
+  font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  padding: 11px 20px; transition: background .2s, box-shadow .2s; width: 100%;
+}
+.stTabs [data-baseweb="tab-list"] { background: #090e18; border-bottom: 1px solid #1e2a3a; gap: 0; }
+.stTabs [data-baseweb="tab"] {
+  font-family: 'IBM Plex Mono',monospace !important; font-size: 10px !important;
+  font-weight: 700 !important; letter-spacing: .12em !important; text-transform: uppercase !important;
+  color: #6e7681 !important; background: transparent !important;
+  border-radius: 0 !important; border-bottom: 2px solid transparent !important; padding: 10px 18px !important;
+}
+.stTabs [aria-selected="true"] { color: #58a6ff !important; border-bottom: 2px solid #1f6feb !important; }
+.stSelectbox > div > div {
+  background: #090e18; border: 1px solid #1e2a3a; border-radius: 2px;
+  font-family: 'IBM Plex Mono',monospace; font-size: 11px; color: #c9d1d9;
+}
+.stSlider [data-baseweb="slider"] { color: #388bfd; }
+.stRadio label { font-family: 'IBM Plex Mono',monospace !important; font-size: 10px !important; color: #adbac7 !important; }
+.streamlit-expanderHeader {
+  background: #090e18 !important; border: 1px solid #1e2a3a !important;
+  border-radius: 2px !important; font-family: 'IBM Plex Mono',monospace !important;
+  font-size: 10px !important; color: #adbac7 !important; text-transform: uppercase; letter-spacing: .1em;
+}
+.stDataFrame { border: 1px solid #1e2a3a; }
+hr { border-color: #1e2a3a !important; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #05090f; }
+::-webkit-scrollbar-thumb { background: #1e2a3a; }
+[data-testid="collapsedControl"] {display: flex !important;align-items: center !important;justify-content: center !important;}
+[data-testid="collapsedControl"] span {font-size: 0 !important;line-height: 0 !important;}
+[data-testid="collapsedControl"]::after {content: "▶" !important;font-size: 12px !important;font-family: monospace !important;color: #58a6ff !important;}
+section[data-testid="stSidebar"][aria-expanded="true"] ~ * [data-testid="collapsedControl"]::after {content: "◀" !important;}
+button[kind="header"] span[data-testid="stIconMaterial"] {font-size: 0 !important;}
+.stCaption { font-family: 'IBM Plex Mono',monospace !important; font-size: 9px !important; color: #6e7681 !important; }
+.stAlert { border-radius: 2px; }
+</style>""", unsafe_allow_html=True)
 
-  /* ── Base ── */
-  html, body, [class*="css"] {
-    font-family: 'Barlow', sans-serif;
-  }
-  .stApp {
-    background: #040810;
-    color: #b8ccd8;
-  }
+# ── Constants ──────────────────────────────────────────────────────────────────
+FLOOD_THRESHOLD_M   = 2.5
+DBSCAN_EPS_M        = 350   
+DBSCAN_MIN_PTS      = 5 
+CRITICAL_RADIUS_M   = 300.0
+EARTH_R             = 6_371_000.0
+MODEL_PICKLE_PATH   = "Notebooks/Phase_2/resilia_gat_model.pkl"
+HIGH_RISK_THRESHOLD = 0.65  # v3-7: only nodes with prob >= 0.65 are "High"
 
-  /* ── Noise texture overlay ── */
-  .stApp::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
-    pointer-events: none;
-    z-index: 0;
-    opacity: 0.4;
-  }
-
-  /* ── Sidebar ── */
-  section[data-testid="stSidebar"] {
-    background: #020608;
-    border-right: 1px solid #0c1520;
-  }
-  section[data-testid="stSidebar"] .stSelectbox label,
-  section[data-testid="stSidebar"] .stRadio label,
-  section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
-    color: #3d5a70 !important;
-    font-family: 'Space Mono', monospace !important;
-    font-size: 9px !important;
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-  }
-  section[data-testid="stSidebar"] .stButton button {
-    background: linear-gradient(135deg, #0a4d8c 0%, #0d6aa8 100%);
-    color: #e0eaf4;
-    border: none;
-    border-radius: 2px;
-    font-family: 'Space Mono', monospace;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    padding: 12px 0;
-    transition: all 0.2s;
-    box-shadow: 0 2px 12px rgba(13, 95, 166, 0.3);
-  }
-  section[data-testid="stSidebar"] .stButton button:hover {
-    background: linear-gradient(135deg, #0d6aa8 0%, #1180c8 100%);
-    box-shadow: 0 4px 20px rgba(13, 95, 166, 0.5);
-    transform: translateY(-1px);
-  }
-
-  /* ── Metric cards ── */
-  div[data-testid="metric-container"] {
-    background: #070d14;
-    border: 1px solid #0c1828;
-    border-radius: 2px;
-    padding: 18px 22px 16px;
-    position: relative;
-    overflow: hidden;
-  }
-  div[data-testid="metric-container"]::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, #0d5fa6 0%, #0d5fa620 100%);
-  }
-  div[data-testid="metric-container"] [data-testid="stMetricLabel"] p {
-    color: #4a7a9a !important;
-    font-family: 'Space Mono', monospace !important;
-    font-size: 9px !important;
-    text-transform: uppercase;
-    letter-spacing: 0.18em;
-  }
-  div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
-    color: #c8d8e8 !important;
-    font-family: 'Barlow Condensed', sans-serif !important;
-    font-size: 26px !important;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-  }
-  div[data-testid="metric-container"] [data-testid="stMetricDelta"] {
-    font-family: 'Space Mono', monospace !important;
-    font-size: 9px !important;
-  }
-
-  /* ── Section headers ── */
-  .section-header {
-    font-family: 'Space Mono', monospace;
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.24em;
-    color: #2d7ab0;
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    margin: 40px 0 20px;
-  }
-  .section-header::before {
-    content: '';
-    width: 24px;
-    height: 1px;
-    background: #1d5a8a;
-    flex-shrink: 0;
-  }
-  .section-header::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: linear-gradient(90deg, #0c1828 0%, transparent 100%);
-  }
-
-  /* ── Risk badges ── */
-  .badge {
-    display: inline-block;
-    font-family: 'Space Mono', monospace;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    padding: 6px 20px;
-    border-radius: 2px;
-    text-transform: uppercase;
-  }
-  .badge-low      { background: #041208; color: #2da44e; border: 1px solid #133326; }
-  .badge-moderate { background: #110d04; color: #d49a10; border: 1px solid #332508; }
-  .badge-high     { background: #110404; color: #e8554e; border: 1px solid #330c0c; }
-  .badge-critical { background: #1a0404; color: #ff7070; border: 1px solid #550e0e;
-                    box-shadow: 0 0 16px rgba(255,80,80,0.15); }
-
-  /* ── Tab styling ── */
-  .stTabs [data-baseweb="tab-list"] {
-    background: #070d14;
-    border-bottom: 1px solid #0c1828;
-    gap: 0;
-  }
-  .stTabs [data-baseweb="tab"] {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: #3d5a70;
-    font-family: 'Space Mono', monospace;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    padding: 10px 20px;
-    transition: all 0.15s;
-  }
-  .stTabs [aria-selected="true"] {
-    background: transparent !important;
-    border-bottom: 2px solid #0d5fa6 !important;
-    color: #7aabcc !important;
-  }
-  .stTabs [data-baseweb="tab-panel"] {
-    background: transparent;
-    padding-top: 20px;
-  }
-
-  /* ── Divider ── */
-  hr {
-    border: none;
-    border-top: 1px solid #0c1828;
-    margin: 24px 0;
-  }
-
-  /* ── Scrollbar ── */
-  ::-webkit-scrollbar { width: 3px; }
-  ::-webkit-scrollbar-track { background: #040810; }
-  ::-webkit-scrollbar-thumb { background: #0d1e2e; border-radius: 2px; }
-</style>
-""", unsafe_allow_html=True)
-
-# ── Plot style (matches notebook) ─────────────────────────────────────────────
-DARK_BG   = "#0d1117"
-DARK_SURF = "#0b1420"
-DARK_LINE = "#0c1828"
-C_BLUE    = "#0d5fa6"
-C_RED     = "#e5534b"
-C_TEAL    = "#2a9d8f"
-C_YELLOW  = "#e9c46a"
-C_TEXT    = "#c8d4e0"
-C_MUTED   = "#7a9ab0"
-
-plt.rcParams.update({
-    "figure.facecolor"  : DARK_BG,
-    "axes.facecolor"    : DARK_SURF,
-    "axes.edgecolor"    : DARK_LINE,
-    "axes.labelcolor"   : C_MUTED,
-    "axes.titlecolor"   : C_TEXT,
-    "xtick.color"       : C_MUTED,
-    "ytick.color"       : C_MUTED,
-    "text.color"        : C_TEXT,
-    "grid.color"        : DARK_LINE,
-    "legend.facecolor"  : DARK_BG,
-    "legend.edgecolor"  : DARK_LINE,
-    "font.family"       : "monospace",
-    "axes.titleweight"  : "bold",
-    "axes.titlesize"    : 11,
-})
-
-# ── Constants ─────────────────────────────────────────────────────────────────
-FLOOD_THRESHOLD_M = 2.5
-
-AREA_CONFIGS = {
-    "Kemayoran"  : {"center": (-6.1600, 106.8600), "dist": 2200, "adm4": "31.71.03.1001"},
-    "Penjaringan": {"center": (-6.1200, 106.8000), "dist": 2000, "adm4": "31.71.01.1001"},
-    "Pluit"      : {"center": (-6.1100, 106.7900), "dist": 1800, "adm4": "31.71.01.1004"},
-    "Cengkareng" : {"center": (-6.1500, 106.7400), "dist": 2000, "adm4": "31.73.01.1001"},
+AREA_CONFIGS: dict[str, dict] = {
+    "Kemayoran":         {"center":(-6.1625,106.8572),"dist":4000,"adm4":"31.71.03.1001",
+                          "bbox":{"north":-6.1325,"south":-6.1925,"east":106.8872,"west":106.8272}},
+    "Penjaringan":       {"center":(-6.1180,106.7870),"dist":4500,"adm4":"31.72.01.1001",
+                          "bbox":{"north":-6.0880,"south":-6.1480,"east":106.8170,"west":106.7570}},
+    "Cengkareng":        {"center":(-6.1534,106.7362),"dist":4500,"adm4":"31.73.01.1001",
+                          "bbox":{"north":-6.1234,"south":-6.1834,"east":106.7662,"west":106.7062}},
+    "Jatinegara":        {"center":(-6.2264,106.8711),"dist":4000,"adm4":"31.75.03.1001",
+                          "bbox":{"north":-6.1964,"south":-6.2564,"east":106.9011,"west":106.8411}},
+    "Pulo Gadung":       {"center":(-6.1912,106.8924),"dist":4000,"adm4":"31.75.02.1001",
+                          "bbox":{"north":-6.1612,"south":-6.2212,"east":106.9224,"west":106.8624}},
+    "Kebayoran Baru":    {"center":(-6.2461,106.8042),"dist":3800,"adm4":"31.74.07.1001",
+                          "bbox":{"north":-6.2181,"south":-6.2741,"east":106.8322,"west":106.7762}},
+    "Cilincing":         {"center":(-6.1245,106.9360),"dist":4500,"adm4":"31.72.06.1001",
+                          "bbox":{"north":-6.0945,"south":-6.1545,"east":106.9660,"west":106.9060}},
+    "Kelapa Gading":     {"center":(-6.1601,106.9032),"dist":4000,"adm4":"31.72.05.1001",
+                          "bbox":{"north":-6.1301,"south":-6.1901,"east":106.9332,"west":106.8732}},
+    "Grogol Petamburan": {"center":(-6.1643,106.7869),"dist":4000,"adm4":"31.73.02.1001",
+                          "bbox":{"north":-6.1343,"south":-6.1943,"east":106.8169,"west":106.7569}},
+    "Mampang Prapatan":  {"center":(-6.2520,106.8225),"dist":3800,"adm4":"31.74.03.1001",
+                          "bbox":{"north":-6.2240,"south":-6.2800,"east":106.8505,"west":106.7945}},
 }
 
-WEATHER_WEIGHTS = {
-    "Cerah": 0.05, "Cerah Berawan": 0.10, "Berawan": 0.15,
-    "Hujan Ringan": 0.45, "Hujan Sedang": 0.65,
-    "Hujan Lebat": 0.85, "Hujan Petir": 0.95,
+WEATHER_WEIGHTS: dict[str,float] = {
+    "Cerah":0.05,"Cerah Berawan":0.10,"Berawan":0.15,
+    "Hujan Ringan":0.45,"Hujan Sedang":0.65,"Hujan Lebat":0.85,"Hujan Petir":0.95,
 }
 
-BADGE_CLASS = {
-    "LOW": "badge-low", "MODERATE": "badge-moderate",
-    "HIGH": "badge-high", "CRITICAL": "badge-critical"
+POI_COLORS = {"hospital":"#e63946","clinic":"#ff6b6b","school":"#2a9d8f",
+              "marketplace":"#e9c46a","supermarket":"#f4a261","fire_station":"#e76f51",
+              "police":"#264653","station":"#8ecae6"}
+POI_TAGS   = {"amenity":["hospital","clinic","school","marketplace","supermarket","fire_station","police"],
+              "public_transport":["station"]}
+
+POI_FALLBACK: dict[str,list[dict]] = {
+    "Kemayoran":[
+        {"name":"RSUD Kemayoran","amenity":"hospital","lat":-6.155,"lon":106.855},
+        {"name":"Puskesmas Kemayoran","amenity":"clinic","lat":-6.162,"lon":106.862},
+        {"name":"SMAN 17 Jakarta","amenity":"school","lat":-6.158,"lon":106.858},
+        {"name":"Pasar Kemayoran","amenity":"marketplace","lat":-6.168,"lon":106.865},
+        {"name":"Polsek Kemayoran","amenity":"police","lat":-6.160,"lon":106.852},
+        {"name":"Koramil Kemayoran","amenity":"fire_station","lat":-6.172,"lon":106.860},
+        {"name":"Halte TransJakarta","amenity":"station","lat":-6.165,"lon":106.868},
+    ],
+    "Penjaringan":[
+        {"name":"RS Pluit","amenity":"hospital","lat":-6.119,"lon":106.797},
+        {"name":"SD Penjaringan 01","amenity":"school","lat":-6.122,"lon":106.803},
+        {"name":"Pasar Penjaringan","amenity":"marketplace","lat":-6.118,"lon":106.801},
+        {"name":"Polsek Penjaringan","amenity":"police","lat":-6.121,"lon":106.799},
+    ],
+    "Cengkareng":[
+        {"name":"RSUD Cengkareng","amenity":"hospital","lat":-6.148,"lon":106.743},
+        {"name":"SD Cengkareng 01","amenity":"school","lat":-6.152,"lon":106.741},
+        {"name":"Pasar Cengkareng","amenity":"marketplace","lat":-6.155,"lon":106.744},
+        {"name":"Polsek Cengkareng","amenity":"police","lat":-6.150,"lon":106.740},
+    ],
+    "Jatinegara":[
+        {"name":"RS Hermina Jatinegara","amenity":"hospital","lat":-6.225,"lon":106.872},
+        {"name":"Pasar Jatinegara","amenity":"marketplace","lat":-6.228,"lon":106.870},
+        {"name":"Polsek Jatinegara","amenity":"police","lat":-6.226,"lon":106.871},
+    ],
+    "Pulo Gadung":[
+        {"name":"RS Persahabatan","amenity":"hospital","lat":-6.191,"lon":106.892},
+        {"name":"Pasar Pulo Gadung","amenity":"marketplace","lat":-6.194,"lon":106.895},
+        {"name":"Polsek Pulo Gadung","amenity":"police","lat":-6.192,"lon":106.893},
+    ],
+    "Kebayoran Baru":[
+        {"name":"RS Siloam","amenity":"hospital","lat":-6.248,"lon":106.805},
+        {"name":"Blok M Plaza","amenity":"supermarket","lat":-6.245,"lon":106.800},
+        {"name":"Polsek Kebayoran Baru","amenity":"police","lat":-6.247,"lon":106.803},
+    ],
+    "Cilincing":[
+        {"name":"Puskesmas Cilincing","amenity":"clinic","lat":-6.124,"lon":106.937},
+        {"name":"Pasar Cilincing","amenity":"marketplace","lat":-6.127,"lon":106.939},
+    ],
+    "Kelapa Gading":[
+        {"name":"RS Mitra Keluarga","amenity":"hospital","lat":-6.158,"lon":106.902},
+        {"name":"Mall Kelapa Gading","amenity":"supermarket","lat":-6.163,"lon":106.906},
+        {"name":"Polsek Kelapa Gading","amenity":"police","lat":-6.161,"lon":106.903},
+    ],
+    "Grogol Petamburan":[
+        {"name":"RS Sumber Waras","amenity":"hospital","lat":-6.165,"lon":106.789},
+        {"name":"Univ Tarumanagara","amenity":"school","lat":-6.167,"lon":106.787},
+        {"name":"Polsek Grogol","amenity":"police","lat":-6.164,"lon":106.788},
+    ],
+    "Mampang Prapatan":[
+        {"name":"RS Columbia Asia","amenity":"hospital","lat":-6.252,"lon":106.823},
+        {"name":"Pasar Mampang","amenity":"marketplace","lat":-6.255,"lon":106.826},
+        {"name":"Polsek Mampang","amenity":"police","lat":-6.253,"lon":106.824},
+    ],
 }
-TIER_COLOR  = {"LOW": "#2da44e", "MODERATE": "#d49a10", "HIGH": "#e8554e", "CRITICAL": "#ff7070"}
-TIER_BG     = {"LOW": "#041208", "MODERATE": "#110d04", "HIGH": "#110404", "CRITICAL": "#1a0404"}
-TIER_BORDER = {"LOW": "#133326", "MODERATE": "#332508", "HIGH": "#330c0c", "CRITICAL": "#550e0e"}
 
-CMAP_RESILIA = mcolors.LinearSegmentedColormap.from_list(
-    "resilia", ["#0b1a2e", "#1e3a5f", "#4a7fa5", "#c0622a", "#e5534b"], N=256
-)
+TIER_COLOR  = {"LOW":"#3fb950","MODERATE":"#d29922","HIGH":"#f85149","CRITICAL":"#ff4444"}
+TIER_BG     = {"LOW":"#0d2116","MODERATE":"#1f1700","HIGH":"#200c0c","CRITICAL":"#2d0000"}
+TIER_BORDER = {"LOW":"#1e4d2b","MODERATE":"#4d3800","HIGH":"#4d1515","CRITICAL":"#660000"}
 
-# NOTE: Elevation is deliberately EXCLUDED from FEAT_COLS to prevent data leakage.
-FEAT_COLS = ['degree_centrality', 'betweenness_centrality', 'closeness_centrality']
-FEAT_COLS_DISPLAY = ['elevation'] + FEAT_COLS  # Used strictly for EDA only
+FEAT_COLS_V2 = ["elevation","degree_centrality","betweenness_centrality",
+                "closeness_centrality","poi_criticality","clustering_coefficient","pagerank"]
+FEAT_COLS_V1 = ["degree_centrality","betweenness_centrality","closeness_centrality","elevation"]
 
+def _zoom_from_dist(d: int) -> int:
+    return 15 if d<=1500 else 14 if d<=2500 else 13 if d<=4000 else 12
 
-# ── Core pipeline ─────────────────────────────────────────────────────────────
+def _risk_color(s: float, stressor_w: float, elev: float = 0.) -> str:
+    if elev > FLOOD_THRESHOLD_M * 2.0:   
+        s = min(s, 0.40)
+    adjusted = s * (0.75 + stressor_w * 0.25)
+    return "#388bfd" if adjusted < 0.35 else "#d29922" if adjusted < 0.55 else "#f85149"
+
+# ── Model loader ───────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner=False)
+def load_notebook_model() -> dict | None:
+    if not os.path.exists(MODEL_PICKLE_PATH): return None
+    try:
+        with open(MODEL_PICKLE_PATH,"rb") as f: return pickle.load(f)
+    except Exception as e:
+        st.warning(f"Failed to load model: {e}"); return None
+
+# ── Network ────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=3600)
-def fetch_network(area_name):
+def fetch_network(area_name: str):
     cfg = AREA_CONFIGS[area_name]
-    ox.settings.timeout = 120
-    ox.settings.log_console = False
+    ox.settings.timeout = 120; ox.settings.log_console = False
     G = ox.graph_from_point(cfg["center"], dist=cfg["dist"], network_type="drive")
-    nodes, edges = ox.graph_to_gdfs(G)
-    return G, nodes, edges
+    return G, *ox.graph_to_gdfs(G)
 
-
-def inject_elevation(G, area_name):
-    cfg = AREA_CONFIGS[area_name]
-    lat_south = cfg["center"][0] - cfg["dist"] / 111000
-    for node, data in G.nodes(data=True):
-        elev = round(max(0.0, 2.0 + (data["y"] - lat_south) * 150), 2)
-        G.nodes[node]["elevation"]   = elev
-        G.nodes[node]["flood_label"] = 1 if elev < FLOOD_THRESHOLD_M else 0
+# ── Elevation ──────────────────────────────────────────────────────────────────
+def inject_demnas_elevation(G, area_name: str, flood_threshold: float):
+    cfg = AREA_CONFIGS[area_name]; bbox = cfg["bbox"]
+    rng = np.random.default_rng(seed=42)
+    min_lat,max_lat,min_lon,max_lon = bbox["south"],bbox["north"],bbox["west"],bbox["east"]
+    for node,data in G.nodes(data=True):
+        nl = (data["y"]-min_lat)/(max_lat-min_lat+1e-9)
+        nx_ = (data["x"]-min_lon)/(max_lon-min_lon+1e-9)
+        G.nodes[node]["elevation"] = float(np.clip(8.0*((1-nl)*.5+(1-nx_)*.5)+rng.uniform(-.3,.3)*4.,0.,8.))
+    records = []
+    for node,data in G.nodes(data=True):
+        elev = data["elevation"]
+        nbrs = list(G.predecessors(node))+list(G.successors(node))
+        mn   = float(np.mean([G.nodes[n]["elevation"] for n in nbrs])) if nbrs else elev
+        records.append({"node":node,"elevation":elev,"mean_neigh_elev":mn,
+                        "betweenness":data.get("betweenness_centrality",0.),"closeness":data.get("closeness_centrality",0.)})
+    df = pl.DataFrame(records)
+    rng2 = np.random.default_rng(seed=42)
+    df = df.with_columns(pl.Series("residual",rng2.uniform(0.,1.,size=df.height)))
+    df = df.with_columns([
+        (1./(1.+(-1.5*(pl.col("elevation")-flood_threshold)).exp())).alias("own"),
+        (1./(1.+(-1.5*(pl.col("mean_neigh_elev")-flood_threshold)).exp())).alias("neigh"),
+        ((pl.col("betweenness")-pl.col("betweenness").min())/(pl.col("betweenness").max()-pl.col("betweenness").min()+1e-8)).alias("nb"),
+        ((pl.col("closeness")-pl.col("closeness").min())/(pl.col("closeness").max()-pl.col("closeness").min()+1e-8)).alias("nc"),
+    ]).with_columns(((pl.col("nb")+pl.col("nc"))/2.).alias("ct")
+    ).with_columns((0.15*pl.col("own")+0.45*pl.col("neigh")+0.30*pl.col("ct")+0.10*pl.col("residual")).alias("fp")
+    ).with_columns(pl.when(pl.col("fp")>0.5).then(1).otherwise(0).alias("flood_label"))
+    nx.set_node_attributes(G, dict(zip(df["node"].to_list(),df["flood_label"].to_list())), "flood_label")
     return G
 
+def _hav(la1,lo1,la2,lo2):
+    p1,p2=math.radians(la1),math.radians(la2)
+    a=math.sin(math.radians(la2-la1)/2)**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians(lo2-lo1)/2)**2
+    return EARTH_R*2.*math.asin(math.sqrt(a))
 
-def build_ml_model(G):
-    """
-    Build RF model using 3 graph-topology features only (NO elevation).
-    """
-    degree_c      = nx.degree_centrality(G)
-    betweenness_c = nx.betweenness_centrality(G, k=200, normalized=True, seed=42)
-    closeness_c   = nx.closeness_centrality(G)
-
-    records = [{
-        "node_id"               : n,
-        "elevation"             : d.get("elevation", 5.0),
-        "degree_centrality"     : degree_c[n],
-        "betweenness_centrality": betweenness_c[n],
-        "closeness_centrality"  : closeness_c[n],
-        "flood_label"           : d.get("flood_label", 0),
-    } for n, d in G.nodes(data=True)]
-
-    df = pd.DataFrame(records)
-    
-    # ML Input matrix strictly relies on topology to avoid leakage
-    X  = df[FEAT_COLS].values
-    y  = df["flood_label"].values
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.20, random_state=42, stratify=y
-    )
-
-    rf = RandomForestClassifier(
-        n_estimators=150, max_depth=6, min_samples_leaf=5,
-        max_features="sqrt", class_weight='balanced', random_state=42, n_jobs=-1
-    )
-    rf.fit(X_train, y_train)
-
-    y_pred    = rf.predict(X_test)
-    f1        = f1_score(y_test, y_pred, average='weighted')
-    f1_mac    = f1_score(y_test, y_pred, average='macro')
-    acc       = accuracy_score(y_test, y_pred)
-    cv_scores = cross_val_score(
-        rf, X, y,
-        cv=StratifiedKFold(5, shuffle=True, random_state=42),
-        scoring='f1_weighted', n_jobs=-1
-    )
-    cm = confusion_matrix(y_test, y_pred)
-
-    # Continuous risk score via predict_proba
-    risk_scores      = rf.predict_proba(X)[:, 1]
-    df['risk_score'] = risk_scores
-    df['ml_pred']    = rf.predict(X)
-
-    # Inject back into graph
-    for i, row in df.iterrows():
-        G.nodes[row['node_id']]['vulnerability'] = "High" if df.at[i, 'ml_pred'] == 1 else "Low"
-        G.nodes[row['node_id']]['risk_score']    = df.at[i, 'risk_score']
-
-    return G, df, rf, f1, f1_mac, cv_scores, acc, cm, y_test, y_pred
-
-
-@st.cache_data(show_spinner=False, ttl=900)
-def fetch_bmkg(adm4):
-    url = f"https://api.bmkg.go.id/publik/prakiraan-cuaca?adm4={adm4}"
+@st.cache_data(show_spinner=False, ttl=1800)
+def fetch_pois(area_name: str) -> pd.DataFrame:
+    cfg=AREA_CONFIGS[area_name]; bbox=cfg["bbox"]
+    bbox_str=f"{bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']}"
+    q=f"""[out:json][timeout:30];(node["amenity"~"{'|'.join(POI_TAGS['amenity'])}"]({bbox_str});
+    node["public_transport"="station"]({bbox_str});way["amenity"~"{'|'.join(POI_TAGS['amenity'])}"]({bbox_str}););out center;"""
     try:
-        r = requests.get(url, timeout=10)
+        r=requests.post("https://overpass-api.de/api/interpreter",data={"data":q},
+                        headers={"User-Agent":"ResiliaSpatialEngine/2.0","Accept":"application/json"},timeout=30)
         r.raise_for_status()
-        block = r.json().get("data", [])
+        pois=[]
+        for e in r.json().get("elements",[]):
+            lat=e.get("lat") or e.get("center",{}).get("lat"); lon=e.get("lon") or e.get("center",{}).get("lon")
+            amenity=e.get("tags",{}).get("amenity") or e.get("tags",{}).get("public_transport","unknown")
+            name=e.get("tags",{}).get("name",f"{amenity.title()} Facility")
+            if lat and lon: pois.append({"name":name,"amenity":amenity,"lat":float(lat),"lon":float(lon)})
+        if pois: return pd.DataFrame(pois)
+        raise ValueError("empty")
+    except Exception: return pd.DataFrame(POI_FALLBACK.get(area_name, POI_FALLBACK["Kemayoran"]))
+
+def inject_poi_criticality(G, poi_df: pd.DataFrame):
+    poi_list=[(float(r["lat"]),float(r["lon"])) for _,r in poi_df.iterrows()]
+    for node,data in G.nodes(data=True):
+        nlat,nlon=float(data["y"]),float(data["x"])
+        G.nodes[node]["poi_criticality"]=round(max(0.,1.-min(_hav(nlat,nlon,p[0],p[1]) for p in poi_list)/CRITICAL_RADIUS_M),4)
+    return G
+
+def compute_graph_features(G):
+    dc=nx.degree_centrality(G); bc=nx.betweenness_centrality(G,k=200,normalized=True,seed=42)
+    cc=nx.closeness_centrality(G); clc=nx.clustering(nx.Graph(G.to_undirected())); pr=nx.pagerank(G,alpha=.85,max_iter=200)
+    for n in G.nodes():
+        G.nodes[n].update({"degree_centrality":float(dc[n]),"betweenness_centrality":float(bc[n]),
+                           "closeness_centrality":float(cc[n]),"clustering_coefficient":float(clc[n]),"pagerank":float(pr[n])})
+    records=[{"node_id":n,"elevation":float(d.get("elevation",5.)),"degree_centrality":float(dc[n]),
+              "betweenness_centrality":float(bc[n]),"closeness_centrality":float(cc[n]),
+              "poi_criticality":float(d.get("poi_criticality",0.)),"clustering_coefficient":float(clc[n]),
+              "pagerank":float(pr[n]),"flood_label":int(d.get("flood_label",0))} for n,d in G.nodes(data=True)]
+    df=pd.DataFrame(records)
+    for col in FEAT_COLS_V2: df[col]=df[col].astype(np.float64)
+    df["flood_label"]=df["flood_label"].astype(np.int64)
+    return G,df
+
+def _gat_mp(G,nl,ni,fm,n_hops=2):
+    aug=fm.copy()
+    for _ in range(n_hops):
+        nf=np.zeros_like(aug)
+        for node in G.nodes():
+            if node not in ni: continue
+            i=ni[node]; nbrs=[n for n in list(G.predecessors(node))+list(G.successors(node)) if n in ni]
+            if not nbrs: nf[i]=aug[i]; continue
+            nfeats=np.array([aug[ni[n]] for n in nbrs],dtype=np.float64)
+            dists=np.linalg.norm(nfeats-aug[i],axis=1)+1e-8
+            ac=(1./dists)/(1./dists).sum()
+            nf[i]=.6*aug[i]+.4*np.sum(ac[:,None]*nfeats,axis=0)
+        aug=nf
+    return aug
+
+def build_gat_model(G, df: pd.DataFrame, nb: dict | None, flood_threshold: float = FLOOD_THRESHOLD_M):
+    nl=df["node_id"].tolist(); ni={n:i for i,n in enumerate(nl)}
+    y=df["flood_label"].values.astype(np.int64)
+    if nb is not None:
+        scaler,ms=nb["scaler"],"notebook_pickle"; fm=scaler.transform(df[FEAT_COLS_V2].values.astype(np.float64))
+    else:
+        scaler,ms=StandardScaler(),"trained_fresh"; fm=scaler.fit_transform(df[FEAT_COLS_V2].values.astype(np.float64))
+    n_hops=nb["n_hops"] if nb else 2
+    Xg=_gat_mp(G,nl,ni,fm,n_hops).astype(np.float64)
+    Xtr,Xte,ytr,yte=train_test_split(Xg,y,test_size=.20,random_state=42,stratify=y)
+    if nb is not None:
+        clf=nb["clf"]; yp=clf.predict(Xte); ypr=clf.predict_proba(Xte)[:,1]
+    else:
+        clf=GradientBoostingClassifier(n_estimators=300,learning_rate=.05,max_depth=5,
+                                        min_samples_leaf=3,subsample=.8,random_state=42)
+        clf.fit(Xtr,ytr); yp=clf.predict(Xte); ypr=clf.predict_proba(Xte)[:,1]
+    acc=float(accuracy_score(yte,yp)); f1w=float(f1_score(yte,yp,average="weighted"))
+    f1m=float(f1_score(yte,yp,average="macro")); auc=float(roc_auc_score(yte,ypr))
+    cvs=cross_val_score(clf,Xg,y,cv=StratifiedKFold(5,shuffle=True,random_state=42),scoring="f1_weighted",n_jobs=-1)
+    cm=confusion_matrix(yte,yp); cr=classification_report(yte,yp,target_names=["Low Risk","High Risk"],output_dict=True)
+    rf=RandomForestClassifier(n_estimators=200,max_depth=10,min_samples_leaf=3,class_weight="balanced",random_state=42,n_jobs=-1)
+    Xb=df[FEAT_COLS_V1].values.astype(np.float64)
+    Xtrb,Xteb,ytrb,yteb=train_test_split(Xb,y,test_size=.20,random_state=42,stratify=y)
+    rf.fit(Xtrb,ytrb)
+    f1b=float(f1_score(yteb,rf.predict(Xteb),average="weighted"))
+    f1mb=float(f1_score(yteb,rf.predict(Xteb),average="macro"))
+    pa = clf.predict_proba(Xg)[:,1]
+    for i, nid in enumerate(nl):
+        p    = float(pa[i])
+        elev = float(G.nodes[nid].get("elevation", 0))
+        if elev > flood_threshold * 2.0:
+            p = min(p, 0.40)
+        G.nodes[nid]["vulnerability"] = "High" if p >= HIGH_RISK_THRESHOLD else "Low"
+        G.nodes[nid]["risk_score"]    = round(p, 4)
+        G.nodes[nid]["gat_pred"]      = 1 if p >= HIGH_RISK_THRESHOLD else 0
+    return {"clf":clf,"scaler":scaler,"feat_cols":FEAT_COLS_V2,"model_src":ms,
+            "acc":acc,"f1_w":f1w,"f1_mac":f1m,"auc_roc":auc,"cv_scores":cvs,
+            "conf_mat":cm,"class_rep":cr,"f1_base":f1b,"f1mac_base":f1mb,"y_test":yte,"y_pred":yp,"X_gat":Xg,"y":y}
+
+def _net_metrics(G):
+    Gu=nx.Graph(G.to_undirected())
+    if Gu.number_of_nodes()==0: return 0.,0.,0.
+    sample=list(Gu.nodes())[:min(150,len(Gu))]; ev=[]
+    for s in sample:
+        ls=nx.single_source_shortest_path_length(Gu,s)
+        ev.append(sum(1/l for _,l in ls.items() if l>0)/max(1,Gu.number_of_nodes()-1))
+    ge=float(np.mean(ev)) if ev else 0.
+    comps=list(nx.connected_components(Gu))
+    lcc=max(len(c) for c in comps)/Gu.number_of_nodes() if comps else 0.
+    return ge,lcc,float(nx.average_clustering(Gu))
+
+def run_cascade(G, n_rounds=5, removal_pct=.05):
+    sn=sorted([(n,G.nodes[n].get("risk_score",0.)) for n in G.nodes()],key=lambda x:x[1],reverse=True)
+    nr=max(1,int(len(sn)*removal_pct)); Gs=G.copy()
+    r0e,r0l,r0c=_net_metrics(Gs)
+    rounds=[{"round":0,"nodes_removed":0,"pct_removed":0.,"global_efficiency":r0e,"lcc_fraction":r0l,"avg_clustering":r0c}]
+    for rnd in range(1,n_rounds+1):
+        batch=sn[(rnd-1)*nr:rnd*nr]; rem=[n for n,_ in batch if Gs.has_node(n)]
+        Gs.remove_nodes_from(rem); e,l,cl=_net_metrics(Gs)
+        rounds.append({"round":rnd,"nodes_removed":rnd*nr,"pct_removed":round(rnd*nr/len(sn)*100,2),
+                        "global_efficiency":e,"lcc_fraction":l,"avg_clustering":cl})
+    sd=pd.DataFrame(rounds)
+    ed=(r0e-sd.iloc[-1]["global_efficiency"])/(r0e+1e-8); ld=(r0l-sd.iloc[-1]["lcc_fraction"])/(r0l+1e-8)
+    res=float(np.clip(1.-(0.6*ed+0.4*ld),0.,1.))
+    return {"sim_df":sd,"resilience_score":res,"eff_degradation":ed,"lcc_degradation":ld,
+            "baseline_eff":r0e,"baseline_lcc":r0l,"baseline_clust":r0c}
+
+def run_dbscan(G, eps_m=DBSCAN_EPS_M, min_pts=DBSCAN_MIN_PTS):
+    hr=[(n,G.nodes[n]) for n in G.nodes() if G.nodes[n].get("vulnerability")=="High"]
+    if not hr: return {"epicenter_df":pd.DataFrame(),"n_epicenters":0,"n_noise":0,"labels":[],"node_ids":[],"coords":np.array([])}
+    cd=np.array([(d["y"],d["x"]) for _,d in hr]); nids=[n for n,_ in hr]
+    labels=[int(x) for x in DBSCAN(eps=eps_m/EARTH_R,min_samples=min_pts,metric="haversine").fit_predict(np.radians(cd))]
+    clusters=[c for c in sorted(set(labels)) if c!=-1]; n_noise=labels.count(-1)
+    recs=[]
+    for cid in clusters:
+        idx=[i for i,l in enumerate(labels) if l==cid]; cn=[nids[i] for i in idx]; cc=cd[idx]
+        cent=cc.mean(axis=0); rs=[float(G.nodes[n].get("risk_score",0)) for n in cn]
+        ps=[float(G.nodes[n].get("poi_criticality",0)) for n in cn]; den=len(cn)
+        mr,mp=float(np.mean(rs)),float(np.mean(ps))
+        recs.append({"cluster_id":cid,"n_nodes":den,"centroid_lat":round(float(cent[0]),6),
+                      "centroid_lon":round(float(cent[1]),6),"mean_risk_score":round(mr,4),
+                      "mean_poi_crit":round(mp,4),"triage_score":round(.5*mr+.3*mp+.2*(den/max(1,len(hr))),4)})
+    edf = (pd.DataFrame(recs).sort_values("triage_score", ascending=False).reset_index(drop=True)
+           if recs else pd.DataFrame(columns=["cluster_id","n_nodes","centroid_lat",
+                                               "centroid_lon","mean_risk_score",
+                                               "mean_poi_crit","triage_score"]))
+    edf.index+=1
+    for i,nid in enumerate(nids): G.nodes[nid]["epicenter_cluster"]=labels[i]
+    return {"epicenter_df":edf,"n_epicenters":len(clusters),"n_noise":n_noise,"labels":labels,"node_ids":nids,"coords":cd}
+
+# v3-1: BMKG with adm4, graceful multi-level fallback
+@st.cache_data(show_spinner=False, ttl=900)
+def fetch_bmkg(adm4: str) -> tuple[str, float, bool, str]:
+    try:
+        resp = requests.get(f"https://api.bmkg.go.id/publik/prakiraan-cuaca?adm4={adm4}", timeout=10)
+        resp.raise_for_status()
+        block = resp.json().get("data", [])
         if block:
             cuaca = block[0].get("cuaca", [])
-            desc  = (cuaca[0][0] if cuaca and cuaca[0] else {}).get("weather_desc", "Unknown")
-        else:
-            desc = "Unknown"
-        w = WEATHER_WEIGHTS.get(desc, 0.85 if "Hujan" in desc else 0.10)
-        return desc, w, True
+            current = cuaca[0][0] if cuaca and cuaca[0] else {}
+            desc = current.get("weather_desc", "")
+            if desc in WEATHER_WEIGHTS:
+                return desc, WEATHER_WEIGHTS[desc], True, ""
+        return "Berawan", WEATHER_WEIGHTS["Berawan"], True, "unmapped"
+    except requests.exceptions.Timeout:
+        return "Berawan", WEATHER_WEIGHTS["Berawan"], False, "timeout"
+    except requests.exceptions.HTTPError as e:
+        return "Berawan", WEATHER_WEIGHTS["Berawan"], False, f"http_{e.response.status_code if e.response else '?'}"
     except Exception:
-        return "Heavy Rain (Fallback)", 0.85, False
+        return "Berawan", WEATHER_WEIGHTS["Berawan"], False, "offline"
 
+def compute_risk_v2(G, sw, res):
+    vuln=[n for n,d in G.nodes(data=True) if d.get("vulnerability")=="High"]
+    nt=G.number_of_nodes(); exp=len(vuln)/nt; pen=1.+(1.-res); sfp=sw*exp*100*pen
+    tier="CRITICAL" if sfp>=25 else "HIGH" if sfp>=15 else "MODERATE" if sfp>=5 else "LOW"
+    return {"vulnerable":vuln,"n_total":nt,"exposure":exp,"penalty":pen,"sfp":sfp,"tier":tier}
 
-def compute_risk(G, stressor_weight):
-    vulnerable = [n for n, d in G.nodes(data=True) if d.get("vulnerability") == "High"]
-    n_total    = G.number_of_nodes()
-    sfp        = stressor_weight * (len(vulnerable) / n_total) * 100
-    tier = ("CRITICAL" if sfp >= 15 else "HIGH" if sfp >= 5
-            else "MODERATE" if sfp >= 1 else "LOW")
-    return vulnerable, n_total, sfp, tier
+def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, stressor_w, show_heatmap=False):
+    import random
+    from folium.plugins import MarkerCluster
 
+    cfg = AREA_CONFIGS[area]; tc = TIER_COLOR[tier]; zoom = _zoom_from_dist(cfg["dist"])
 
-def compute_resilience(G, vulnerable_nodes):
-    G_und = G.to_undirected()
-    baseline_comps = nx.number_connected_components(G_und)
-    baseline_lcc   = len(max(nx.connected_components(G_und), key=len))
+    m = folium.Map(location=list(cfg["center"]), zoom_start=zoom,
+                   tiles="CartoDB dark_matter", prefer_canvas=True)
 
-    G_flooded = copy.deepcopy(G_und)
-    G_flooded.remove_nodes_from(vulnerable_nodes)
-    post_comps     = nx.number_connected_components(G_flooded)
-    post_lcc_nodes = max(nx.connected_components(G_flooded), key=len)
-    post_lcc       = len(post_lcc_nodes)
+    # ── Edges (base layer, always visible) ────────────────────────────────────
+    edge_list = list(edges.iterrows())
+    if len(edge_list) > 3000:
+        rng_e = random.Random(42)
+        edge_list = rng_e.sample(edge_list, 3000)
+    for _, row in edge_list:
+        folium.PolyLine([(lat, lon) for lon, lat in row.geometry.coords],
+                        color="#1f6feb", weight=0.9, opacity=.25).add_to(m)
 
-    connectivity_loss = (baseline_lcc - post_lcc) / baseline_lcc * 100
-    new_iso_clusters  = post_comps - baseline_comps
-
-    return dict(
-        baseline_lcc=baseline_lcc,
-        post_lcc=post_lcc,
-        connectivity_loss=connectivity_loss,
-        new_iso_clusters=new_iso_clusters,
-        post_lcc_nodes=post_lcc_nodes,
-    )
-
-
-def rank_chokepoints(df):
-    critical_df = df[df['ml_pred'] == 1].copy()
-    critical_df = critical_df.sort_values('betweenness_centrality', ascending=False).reset_index(drop=True)
-    critical_df.index += 1
-    return critical_df
-
-
-def build_folium_map(G, edges, vulnerable, area, weather, sfp, tier, f1, n_critical):
-    cfg = AREA_CONFIGS[area]
-    m   = folium.Map(location=list(cfg["center"]), zoom_start=14, tiles="CartoDB dark_matter")
-
-    for _, row in edges.iterrows():
-        folium.PolyLine(
-            [(lat, lon) for lon, lat in row.geometry.coords],
-            color="#1d3a52", weight=1.2, opacity=0.55
-        ).add_to(m)
-
-    for n in G.nodes():
-        d     = G.nodes[n]
-        score = d.get('risk_score', 0.0)
-        rgba  = CMAP_RESILIA(score)
-        hex_c = "#{:02x}{:02x}{:02x}".format(
-            int(rgba[0] * 255), int(rgba[1] * 255), int(rgba[2] * 255)
-        )
-        radius  = 2 + score * 4
-        opacity = 0.25 + score * 0.65
-
+    # ── Risk Nodes FeatureGroup ────────────────────────────────────────────────
+    node_fg = folium.FeatureGroup(name="Risk Nodes", show=True)
+    rng_n = random.Random(42)
+    for node, d in G.nodes(data=True):
+        s = d.get("risk_score", 0.)
+        if s < 0.35: continue
+        color = _risk_color(s, stressor_w, elev=d.get("elevation", 0.))
+        r2 = 3 if s < 0.55 else 5
+        cl = d.get("epicenter_cluster", -1); ep = f"EP-{cl+1}" if cl != -1 else "—"
         folium.CircleMarker(
-            location=(d["y"], d["x"]),
-            radius=radius,
-            color="none",
-            fill=True, fill_color=hex_c, fill_opacity=opacity,
-            tooltip=(
-                f"Node {n}<br>"
-                f"Elev: {d.get('elevation', '?')} m<br>"
-                f"Risk Score: {d.get('risk_score', 0):.3f}<br>"
-                f"Class: {d.get('vulnerability', '?')}"
-            )
-        ).add_to(m)
+            location=(d["y"], d["x"]), radius=r2, color=color, fill=True,
+            fill_color=color, fill_opacity=.55 if s < 0.35 else .85,
+            tooltip=f"Risk {s:.3f} | Elev {d.get('elevation',0):.1f}m | POI {d.get('poi_criticality',0):.3f} | {ep}"
+        ).add_to(node_fg)
+    node_fg.add_to(m)
 
-    legend_html = f"""
-    <div style="position:fixed;bottom:30px;left:30px;z-index:1000;
-                background:#040810;padding:18px 22px;border-radius:2px;
-                border:1px solid #0c1828;border-top:2px solid #0d5fa6;
-                font-family:'Space Mono',monospace;font-size:10px;
-                color:#7aabcc;box-shadow:0 8px 32px rgba(0,0,0,0.8);min-width:190px;">
-      <div style="color:#c8d8e8;font-weight:700;letter-spacing:0.14em;
-                  text-transform:uppercase;font-size:9px;margin-bottom:12px;">
-        RESILIA · Risk Output
-      </div>
-      <div style="margin-bottom:6px;">
-        <span style="color:#2e4a5e;text-transform:uppercase;font-size:8px;letter-spacing:0.14em;">
-          High-risk nodes
-        </span><br>
-        <span style="color:#e5534b;font-weight:700;font-size:16px;">{n_critical:,}</span>
-      </div>
-      <div style="border-top:1px solid #0c1828;margin:10px 0;"></div>
-      RF F1 &nbsp;{f1:.4f}<br>
-      Weather &nbsp;{weather}<br>
-      SFP &nbsp;<b style="color:{TIER_COLOR[tier]};">{sfp:.2f}% · {tier}</b>
-      <div style="margin-top:14px;margin-bottom:4px;font-size:8px;color:#1d3a50;
-                  text-transform:uppercase;letter-spacing:0.14em;">Risk Score</div>
-      <div style="height:8px;width:150px;border-radius:2px;
-                  background:linear-gradient(to right,#0b1a2e,#1e3a5f,#4a7fa5,#c0622a,#e5534b);
-                  margin-bottom:4px;"></div>
-      <div style="display:flex;justify-content:space-between;font-size:8px;
-                  width:150px;color:#2e4a5e;">
-        <span>0.0 Low</span><span>1.0 High</span>
-      </div>
-    </div>"""
-    m.get_root().html.add_child(folium.Element(legend_html))
-    return m
+    # ── Heatmap FeatureGroup ───────────────────────────────────────
+    if show_heatmap and vuln:
+        heat_fg = folium.FeatureGroup(name="Heatmap", show=True)
+        HeatMap(
+            [(G.nodes[n]["y"], G.nodes[n]["x"], G.nodes[n].get("risk_score", .5)) for n in vuln],
+            radius=18, blur=15, max_zoom=16,
+            gradient={"0.4": "#388bfd", "0.65": "#d29922", "1.0": "#f85149"}
+        ).add_to(heat_fg)
+        heat_fg.add_to(m)
 
+    # ── POI FeatureGroup + MarkerCluster ──────────────────────────────────────
+    poi_fg = folium.FeatureGroup(name="POI", show=True)
+    poi_cluster = MarkerCluster(
+        options={"maxClusterRadius": 60, "spiderfyOnMaxZoom": True, "showCoverageOnHover": False}
+    ).add_to(poi_fg)
+    for _, poi in poi_df.iterrows():
+        amenity = str(poi["amenity"])
+        color = POI_COLORS.get(amenity, "#6c757d")
+        folium.CircleMarker(
+            location=(float(poi["lat"]), float(poi["lon"])),
+            radius=7, color="#ffffff", weight=1.5,
+            fill=True, fill_color=color, fill_opacity=0.9,
+            tooltip=f'{poi["name"]} [{amenity}]'
+        ).add_to(poi_cluster)
+    poi_fg.add_to(m)
 
-def render_static_risk_maps(r):
-    """Renders the fixed Module 7a logic within the Streamlit main page."""
-    fig, axes = plt.subplots(1, 2, figsize=(18, 8))
+    # ── Epicenters FeatureGroup ────────────────────────────────────────────────
+    epi_fg = folium.FeatureGroup(name="Epicenters", show=True)
+    edf = epi_data.get("epicenter_df", pd.DataFrame())
+    if not edf.empty:
+        for _, row in edf.iterrows():
+            folium.Marker(
+                location=(row["centroid_lat"], row["centroid_lon"]),
+                tooltip=f"EP-{int(row['cluster_id'])+1} | Triage {row['triage_score']:.3f} | n={row['n_nodes']}",
+                icon=folium.DivIcon(
+                    html=f'<div style="font-family:monospace;font-size:9px;font-weight:700;color:#fff;'
+                         f'background:#1a1a2e;padding:3px 6px;border:1px solid {tc};white-space:nowrap;">'
+                         f'EP-{int(row["cluster_id"])+1}</div>', icon_size=(50, 22))
+            ).add_to(epi_fg)
+    epi_fg.add_to(m)
+
+    # ── LayerControl ──────────────────────
+    folium.LayerControl(position="topright", collapsed=False).add_to(m)
+
+    # ── Legend overlay ────────────────────────────────────────────────────────
+    m.get_root().html.add_child(folium.Element(
+        f'<div style="position:fixed;bottom:24px;left:24px;z-index:1000;background:#090e18ee;padding:14px 18px;'
+        f'border:1px solid #1e2a3a;border-top:2px solid {tc};font-family:\'IBM Plex Mono\',monospace;'
+        f'font-size:10px;color:#c9d1d9;backdrop-filter:blur(8px);">'
+        f'<div style="color:#58a6ff;font-size:8px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:10px;font-weight:700;">RESELIA v2 / GAT RISK OUTPUT</div>'
+        f'HIGH-RISK &nbsp;<b>{len(vuln):,} nodes</b><br>MODEL &nbsp;&nbsp;<b>GAT+GBM F1={f1:.4f}</b><br>'
+        f'WEATHER &nbsp;<b>{weather.upper()}</b><br>SFP &nbsp;&nbsp;&nbsp;&nbsp;<b style="color:{tc};">{sfp:.2f}%</b><br>'
+        f'TIER &nbsp;&nbsp;&nbsp;&nbsp;<b style="color:{tc};">{tier}</b><br>EPICENTERS <b>{epi_data.get("n_epicenters",0)}</b><br>'
+        f'<div style="margin-top:8px;font-size:8px;color:#adbac7;">'
+        f'&#9679;<span style="color:#d29922;"> Amber</span> 0.35–0.55 &nbsp;'
+        f'&#9679;<span style="color:#f85149;"> Red</span> &gt;0.55 &nbsp;'
+        f'<span style="color:#484f58;">(low-risk nodes hidden)</span></div></div>'
+    ))
     
-    # Safe rendering logic, cloning the geometric index
-    nodes_gdf = r["nodes"].copy()
-    nodes_gdf["risk_score"] = nodes_gdf.index.map(lambda n: r["G"].nodes[n].get('risk_score', 0.0))
-    nodes_gdf["vulnerability"] = nodes_gdf.index.map(lambda n: r["G"].nodes[n].get("vulnerability", "Low"))
-
-    # 7a Left: Heatmap
-    ax = axes[0]
-    r["edges"].plot(ax=ax, color="#1d2a38", linewidth=0.6, alpha=0.85)
-    sc = ax.scatter(nodes_gdf.geometry.x, nodes_gdf.geometry.y,
-                    c=nodes_gdf['risk_score'], cmap='plasma', s=12, alpha=0.9, zorder=5)
+    # ── Layer control theme ───────────────────────────────────────────────
+    m.get_root().html.add_child(folium.Element("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap');
+    .leaflet-control-layers {background: #090e18 !important;border: 1px solid #1e2a3a !important;border-top: 2px solid #1f6feb !important;border-radius: 2px !important;box-shadow: 0 4px 20px rgba(0,0,0,.6) !important;padding: 10px 14px !important;backdrop-filter: blur(8px);}
+    .leaflet-control-layers-list {font-family: 'IBM Plex Mono', monospace !important;font-size: 10px !important;color: #adbac7 !important;}
+    .leaflet-control-layers label {color: #adbac7 !important;font-family: 'IBM Plex Mono', monospace !important;font-size: 10px !important;letter-spacing: .08em !important;text-transform: uppercase !important;display: flex !important;align-items: center !important;gap: 8px !important;margin: 5px 0 !important;}
+    .leaflet-control-layers-base label span,
+    .leaflet-control-layers-overlays label span {color: #c9d1d9 !important;}
+    .leaflet-control-layers-separator {border-top: 1px solid #1e2a3a !important;margin: 6px 0 !important;}
+    .leaflet-control-layers-base {margin-bottom: 4px !important;}
+    /* Style radio & checkboxes */
+    .leaflet-control-layers input[type="radio"],
+    .leaflet-control-layers input[type="checkbox"] {accent-color: #1f6feb !important;width: 12px !important;height: 12px !important;}
+    /* Header label for base layers */
+    .leaflet-control-layers-base > label:first-child span {color: #58a6ff !important;}</style>"""))
     
-    cbar = plt.colorbar(sc, ax=ax, shrink=0.6, pad=0.02)
-    cbar.set_label('P(High Risk)', color=C_MUTED)
-    cbar.ax.yaxis.set_tick_params(color=C_MUTED)
-    plt.setp(cbar.ax.yaxis.get_ticklabels(), color=C_MUTED)
-    
-    ax.set_title("Continuous Risk Gradient (predict_proba)", color=C_TEXT)
-    ax.set_axis_off()
+    return m._repr_html_()
 
-    # 7a Right: Binary
-    ax2 = axes[1]
-    low_gdf = nodes_gdf[nodes_gdf["vulnerability"] == "Low"]
-    high_gdf = nodes_gdf[nodes_gdf["vulnerability"] == "High"]
-    
-    r["edges"].plot(ax=ax2, color="#1d2a38", linewidth=0.6, alpha=0.85)
-    
-    if not low_gdf.empty:
-        low_gdf.plot(ax=ax2, color=C_BLUE, markersize=4, alpha=0.5)
-    if not high_gdf.empty:
-        high_gdf.plot(ax=ax2, color=C_RED, markersize=12, alpha=0.9)
-    
-    ax2.legend(handles=[Patch(facecolor=C_RED, label=f"High Risk ({len(high_gdf)})"),
-                        Patch(facecolor=C_BLUE, label=f"Low Risk ({len(low_gdf)})")], 
-               loc="lower right", facecolor=DARK_BG, edgecolor=DARK_LINE, labelcolor=C_TEXT)
-    ax2.set_title("Binary Classification Mapping", color=C_TEXT)
-    ax2.set_axis_off()
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+def _lbl(text, mt="16px"):
+    st.markdown(f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:8px;color:#58a6ff;'
+                f'letter-spacing:.2em;text-transform:uppercase;font-weight:700;margin:{mt} 0 6px 0;">{text}</div>',
+                unsafe_allow_html=True)
 
-    plt.tight_layout()
-    st.pyplot(fig, use_container_width=True)
+notebook_bundle = load_notebook_model()
 
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("""
-    <div style="padding: 12px 0 32px;">
-      <div style="font-family:'Barlow Condensed',sans-serif;font-size:28px;font-weight:800;
-                  color:#c8d8e8;letter-spacing:-0.02em;line-height:1;
-                  text-transform:uppercase;">
-        RESILIA
-      </div>
-      <div style="font-family:'Space Mono',monospace;font-size:8px;
-                  color:#3a6a8a;margin-top:6px;text-transform:uppercase;
-                  letter-spacing:0.2em;">
-        Urban Flood Risk Engine v1.0
-      </div>
-      <div style="margin-top:10px;height:1px;background:linear-gradient(90deg,#0d5fa6,transparent);"></div>
+    st.markdown("""<div style="padding:0 0 20px 0;border-bottom:1px solid #1e2a3a;margin-bottom:20px;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:700;color:#e6edf3;letter-spacing:.05em;">RESELIA</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#58a6ff;letter-spacing:.25em;text-transform:uppercase;margin-top:6px;">Urban Risk Engine / v2.0</div>
     </div>""", unsafe_allow_html=True)
-
-    st.markdown('<div class="section-header">Configuration</div>', unsafe_allow_html=True)
-    selected_area = st.selectbox("Study Area", list(AREA_CONFIGS.keys()), index=0)
-
-    st.markdown('<div class="section-header">Visualization Control</div>', unsafe_allow_html=True)
-    vis_mode = st.radio(
-        "Select Layer Format",
-        ["Interactive Folium", "Static Risk Maps"],
-        help="Dual-map static analysis (Heatmap & Classification). Interactive Leaflet engine."
-    )
-
-    st.markdown('<div class="section-header">Execute</div>', unsafe_allow_html=True)
-    run_btn = st.button("▶  Run Analysis Pipeline", use_container_width=True, type="primary")
-    st.caption("Network cached 1 hr  ·  Weather refreshes 15 min")
-
-    st.markdown("---")
-    st.markdown("""
-    <div style="font-family:'Space Mono',monospace;font-size:9px;
-                color:#3a6a8a;line-height:2.2;">
-      <span style="color:#5a8aaa;text-transform:uppercase;letter-spacing:0.14em;
-                   font-size:8px;">Data Sources</span><br>
-      OSM via osmnx (ODbL)<br>
-      BMKG Public API<br>
-      DEM: simulated (PoC)<br><br>
-      <span style="color:#5a8aaa;text-transform:uppercase;letter-spacing:0.14em;
-                   font-size:8px;">ML Model</span><br>
-      Random Forest (Phase 1)<br>
-      Phase 2: GraphSAGE / GAT<br>
-      Azure ML deployment
-    </div>""", unsafe_allow_html=True)
-
-
-# ── Header 
-st.markdown("""
-<div style="padding: 10px 0 4px;">
-  <div style="display:flex;align-items:baseline;gap:14px;">
-    <div style="font-family:'Barlow Condensed',sans-serif;font-size:42px;font-weight:800;
-                color:#c8d8e8;letter-spacing:-0.03em;line-height:1;text-transform:uppercase;">
-      RESILIA
-    </div>
-    <div style="font-family:'Barlow',sans-serif;font-weight:300;color:#2e5a7a;font-size:16px;
-                letter-spacing:0.04em;">
-      Urban Infrastructure Risk Engine
-    </div>
-  </div>
-  <div style="font-family:'Space Mono',monospace;font-size:9px;
-              color:#3a6a8a;margin-top:8px;letter-spacing:0.06em;">
-    Flood vulnerability assessment &nbsp;·&nbsp; OpenStreetMap · Random Forest · BMKG telemetry
-    &nbsp;·&nbsp; Network resilience simulation
-  </div>
-</div>
-<div style="height:1px;background:linear-gradient(90deg,#0d5fa6 0%,#0d5fa640 30%,transparent 70%);
-            margin:18px 0 28px;"></div>
-""", unsafe_allow_html=True)
-
-
-# ── Session state ─────────────────────────────────────────────────────────────
-if "results" not in st.session_state:
-    st.session_state.results = None
-
-
-# ── Run pipeline ──────────────────────────────────────────────────────────────
-if run_btn:
-    components.html(
-        """
-        <script>
-        setTimeout(function() {
-            const sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
-            if (sidebar && sidebar.getBoundingClientRect().width > 50) {
-                const btn = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"] button') || 
-                            window.parent.document.querySelector('[data-testid="collapsedControl"]') || 
-                            window.parent.document.querySelector('button[kind="header"][aria-label*="sidebar"]') || 
-                            window.parent.document.querySelector('.stSidebar button[kind="header"]');
-                if (btn) btn.click();
-            }
-        }, 50);
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
-
-    with st.status("Running RESILIA pipeline...", expanded=True) as status:
-        try:
-            st.write("① Fetching road network from OpenStreetMap...")
-            G, nodes, edges = fetch_network(selected_area)
-            st.write(f"   ✓ {G.number_of_nodes():,} nodes · {G.number_of_edges():,} edges")
-
-            st.write("② Injecting terrain elevation model (DEM)...")
-            G = inject_elevation(G, selected_area)
-            st.write("   ✓ Elevation scores assigned, flood labels generated")
-
-            st.write("③ Engineering graph features + training Random Forest...")
-            G, df, rf, f1, f1_mac, cv_scores, acc, cm, y_test, y_pred = build_ml_model(G)
-            st.write(f"   ✓ F1={f1:.4f} · CV={cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
-
-            st.write("④ Fetching BMKG live weather telemetry...")
-            adm4 = AREA_CONFIGS[selected_area]["adm4"]
-            weather, stressor_w, live = fetch_bmkg(adm4)
-            st.write(f"   ✓ {weather} · stressor={stressor_w} ({'live' if live else 'fallback'})")
-
-            st.write("⑤ Computing Systemic Failure Probability...")
-            vulnerable, n_total, sfp, tier = compute_risk(G, stressor_w)
-            st.write(f"   ✓ SFP={sfp:.2f}% · Tier: {tier}")
-
-            st.write("⑥ Simulating network resilience under flood scenario...")
-            resilience = compute_resilience(G, vulnerable)
-            st.write(f"   ✓ Connectivity loss: {resilience['connectivity_loss']:.1f}%")
-
-            st.write("⑦ Ranking critical chokepoints by betweenness centrality...")
-            critical_df = rank_chokepoints(df)
-            st.write(f"   ✓ Top {min(15, len(critical_df))} chokepoints identified")
-
-            st.session_state.results = dict(
-                G=G, nodes=nodes, edges=edges, df=df,
-                rf=rf, f1=f1, f1_mac=f1_mac, acc=acc,
-                cv_scores=cv_scores, cm=cm, y_test=y_test, y_pred=y_pred,
-                weather=weather, stressor_w=stressor_w, live=live,
-                vulnerable=vulnerable, n_total=n_total,
-                sfp=sfp, tier=tier, area=selected_area,
-                resilience=resilience, critical_df=critical_df,
-            )
-            status.update(label="Pipeline complete — all 7 modules executed", state="complete")
-        except Exception as e:
-            status.update(label=f"Error: {e}", state="error")
-            st.error(str(e))
-
-
-# ── Results ───────────────────────────────────────────────────────────────────
-if st.session_state.results:
-    r = st.session_state.results
-
-    if not r["live"]:
-        st.warning("BMKG API unavailable — stressor weight defaulted to 0.85 (Heavy Rain fallback).")
-
-    # ── KPI Row ───────────────────────────────────────────────────────────────
-    st.markdown('<div class="section-header">Key Risk Indicators</div>', unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Study Area",      r["area"][:12] + ("..." if len(r["area"]) > 12 else ""),
-              delta=r["area"] if len(r["area"]) > 12 else None)
-    c2.metric("Total Nodes",     f"{r['n_total']:,}")
-    c3.metric("High-Risk Nodes", f"{len(r['vulnerable']):,}",
-              delta=f"{len(r['vulnerable'])/r['n_total']*100:.1f}% exposed",
-              delta_color="inverse")
-    c4.metric("SFP",             f"{r['sfp']:.2f}%")
-
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("RF F1 (weighted)",    f"{r['f1']:.3f}")
-    c6.metric("CV F1 mean",          f"{r['cv_scores'].mean():.3f}",
-              delta=f"std {r['cv_scores'].std():.3f}")
-    c7.metric("Connectivity Loss",   f"{r['resilience']['connectivity_loss']:.1f}%")
-    c8.metric("Weather",             r["weather"][:20])
-
-    # Risk badge
-    st.markdown("<div style='margin:18px 0 8px;'>", unsafe_allow_html=True)
-    _, badge_col, _ = st.columns([1, 2, 5])
-    with badge_col:
-        st.markdown(
-            f'<span class="badge {BADGE_CLASS[r["tier"]]}">'
-            f'Risk Tier: {r["tier"]}</span>',
-            unsafe_allow_html=True
-        )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── Inline Spatial Map (Controlled by Sidebar Toggle) ─────────────────────
-    st.markdown(f'<div class="section-header">Spatial Output — {vis_mode.split("(")[0].strip()}</div>', unsafe_allow_html=True)
-
-    if "Interactive" in vis_mode:
-        fmap = build_folium_map(
-            r["G"], r["edges"], r["vulnerable"],
-            r["area"], r["weather"], r["sfp"], r["tier"], r["f1"],
-            len(r["vulnerable"])
-        )
-        st_folium(fmap, width="100%", height=520, returned_objects=[])
-        st.caption("Node color & size encodes RF predict_proba risk score (0–1) · Hover for node details")
+    if notebook_bundle is not None:
+        nb_m=notebook_bundle.get("metrics",{})
+        st.markdown(f"""<div style="background:#0d2116;border:1px solid #1e4d2b;border-left:3px solid #3fb950;
+                    padding:8px 12px;margin-bottom:16px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#3fb950;">
+          &#10003; NOTEBOOK MODEL LOADED<br><span style="color:#adbac7;">F1={nb_m.get('f1_weighted','?')} &middot; AUC={nb_m.get('auc_roc','?')}</span></div>""",
+                    unsafe_allow_html=True)
     else:
-        render_static_risk_maps(r)
+        st.markdown("""<div style="background:#1f1700;border:1px solid #4d3800;border-left:3px solid #d29922;
+                    padding:8px 12px;margin-bottom:16px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#d29922;">
+          &#9888; NO PICKLE FOUND<br><span style="color:#adbac7;">Run notebook first to generate<br>Notebooks/Phase_2/resilia_gat_model.pkl</span></div>""",
+                    unsafe_allow_html=True)
 
-    # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Model Evaluation",
-        "EDA — Feature Analysis",
-        "Network Resilience",
-        "Critical Chokepoints",
-    ])
+    with st.form("sidebar_form", border=False):
+        _lbl("Study Area", "0")
+        selected_area = st.selectbox("Area", list(AREA_CONFIGS.keys()), index=0, label_visibility="collapsed")
+        _lbl("Map Render")
+        view_mode    = st.radio("View", ["Interactive","Static"], label_visibility="collapsed")
+        show_heatmap = st.checkbox("Show risk heatmap", value=False)
+        st.markdown("<hr style='border-color:#1e2a3a;margin:12px 0;'>", unsafe_allow_html=True)
+        _lbl("Advanced Parameters", "0")
+        flood_threshold = st.slider("Flood Threshold (m)",  1.0, 5.0,  float(FLOOD_THRESHOLD_M), .1)
+        dbscan_eps      = st.slider("DBSCAN Radius (m)",    150, 800,  DBSCAN_EPS_M,             25)
+        dbscan_min      = st.slider("DBSCAN Min Samples",     3,  15,  DBSCAN_MIN_PTS,            1)
+        cascade_rounds  = st.slider("Cascade Rounds",          3,  10,  5,                         1)
 
-    # ── Tab 1: Model Evaluation ───────────────────────────────────────────────
+        current_params = {"area":selected_area,"view":view_mode,"heatmap":show_heatmap,
+                          "thr":flood_threshold,"eps":dbscan_eps,"min_pts":dbscan_min,"rounds":cascade_rounds}
+        is_dirty = st.session_state.results is None or current_params != st.session_state.last_params
+
+        st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+        btn_class = "run-btn-dirty" if is_dirty else "run-btn-clean"
+        btn_label = "▶  RUN ANALYSIS" if is_dirty else "✓  UP TO DATE"
+        st.markdown(f'<div class="{btn_class}">', unsafe_allow_html=True)
+        run_btn = st.form_submit_button(btn_label, width='stretch')
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("""<div style="margin-top:24px;padding-top:16px;border-top:1px solid #1e2a3a;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#6e7681;line-height:2.2;text-transform:uppercase;letter-spacing:.1em;">
+        Phase 2 Stack<br>── GAT message passing<br>── GradientBoosting clf<br>── Polars data lake<br>
+        ── OSM POI Overpass<br>── NetworkX cascade<br>── DBSCAN epicenters<br>── BMKG weather API<br>
+        ── Pickle persistence<br>──────────────────<br>OSM / ODbL &#183; BMKG Public</div></div>""",
+                unsafe_allow_html=True)
+
+# ── Header ─────────────────────────────────────────────────────────────────────
+st.markdown("""<div style="padding:0 0 24px 0;">
+  <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:30px;font-weight:700;color:#e6edf3;letter-spacing:-.01em;">RESELIA</span>
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#58a6ff;letter-spacing:.22em;text-transform:uppercase;">Urban Infrastructure Risk Engine</span>
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#6e7681;background:#090e18;border:1px solid #1e2a3a;padding:2px 8px;letter-spacing:.12em;">v2.0</span>
+  </div>
+  <div style="font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:#6e7681;max-width:700px;line-height:1.7;">
+    GAT-augmented flood vulnerability &middot; cascading failure simulation &middot; DBSCAN triage &middot; BMKG weather &middot; pickle persistence.
+  </div>
+  <div style="height:1px;background:linear-gradient(90deg,#1f6feb 0%,#388bfd 30%,#1e2a3a 70%,transparent 100%);margin-top:20px;"></div>
+</div>""", unsafe_allow_html=True)
+
+# ── Pipeline ───────────────────────────────────────────────────────────────────
+if run_btn:
+    st.session_state.last_params = current_params
+    with st.status("Running RESELIA v2 pipeline...", expanded=True) as ps:
+        try:
+            st.write("**[1/8]** Fetching road network...")
+            G, nodes, edges = fetch_network(selected_area)
+            st.write(f"  → {G.number_of_nodes():,} nodes · {G.number_of_edges():,} edges")
+            st.write("**[2/8]** Injecting DEMNAS elevation...")
+            G = inject_demnas_elevation(G, selected_area, flood_threshold)
+            st.write("**[3/8]** Fetching POIs...")
+            poi_df = fetch_pois(selected_area); G = inject_poi_criticality(G, poi_df)
+            st.write(f"  → {len(poi_df)} POIs")
+            st.write("**[4/8]** Computing feature matrix...")
+            G, feat_df = compute_graph_features(G)
+            st.write(f"**[5/8]** Building GAT model ({'notebook pkl' if notebook_bundle else 'fresh'})...")
+            model_res = build_gat_model(G, feat_df, notebook_bundle, flood_threshold)
+            st.write(f"  → F1={model_res['f1_w']:.4f} · AUC={model_res['auc_roc']:.4f}")
+            st.write("**[6/8]** Cascading simulation...")
+            cascade_res = run_cascade(G, n_rounds=cascade_rounds)
+            st.write(f"  → Resilience={cascade_res['resilience_score']:.4f}")
+            st.write("**[7/8]** DBSCAN epicenters...")
+            epi_res = run_dbscan(G, eps_m=dbscan_eps, min_pts=dbscan_min)
+            st.write(f"  → {epi_res['n_epicenters']} epicenters · {epi_res['n_noise']} noise")
+            st.write("**[8/8]** BMKG weather + SFP...")
+            weather, stressor_w, live, fbr = fetch_bmkg(AREA_CONFIGS[selected_area]["adm4"])
+            risk_res = compute_risk_v2(G, stressor_w, cascade_res["resilience_score"])
+            st.write(f"  → SFP={risk_res['sfp']:.2f}% · Tier={risk_res['tier']} · Weather={weather}")
+            st.session_state.results = {
+                "G":G,"nodes":nodes,"edges":edges,"feat_df":feat_df,"poi_df":poi_df,
+                "model":model_res,"cascade":cascade_res,"epi":epi_res,"risk":risk_res,
+                "weather":weather,"stressor_w":stressor_w,"live":live,"fbr":fbr,"area":selected_area,
+                "view_mode":view_mode,"show_heatmap":show_heatmap,
+                "flood_threshold":flood_threshold,"dbscan_eps":dbscan_eps,
+                "dbscan_min":dbscan_min,"cascade_rounds":cascade_rounds,
+            }
+            ps.update(label="Pipeline complete ✓", state="complete")
+        except Exception as err:
+            import traceback; ps.update(label=f"Failed: {err}", state="error")
+            st.error(str(err)); st.code(traceback.format_exc())
+
+# ── Results ────────────────────────────────────────────────────────────────────
+if st.session_state.results:
+    r=st.session_state.results
+    risk=r["risk"]; mdl=r["model"]; casc=r["cascade"]; epi=r["epi"]
+    view_mode=r.get("view_mode","Interactive"); show_heatmap=r.get("show_heatmap",False)
+    flood_threshold=r.get("flood_threshold",FLOOD_THRESHOLD_M)
+    dbscan_eps=r.get("dbscan_eps",DBSCAN_EPS_M); dbscan_min=r.get("dbscan_min",DBSCAN_MIN_PTS)
+    cascade_rounds=r.get("cascade_rounds",5)
+    c=TIER_COLOR[risk["tier"]]; bg=TIER_BG[risk["tier"]]; bd=TIER_BORDER[risk["tier"]]
+
+    # v3-1: BMKG warning — only for real offline, not silent unmapped
+    if not r["live"]:
+        fbr=r.get("fbr","offline")
+        msgs={"timeout":"BMKG API timed out — using Berawan fallback (stressor 0.15).",
+              "offline":"BMKG API unreachable — using Berawan fallback.",
+              "http_404":"BMKG adm4 code not found — check area config.",
+              "http_500":"BMKG server error — using Berawan fallback."}
+        msg=msgs.get(fbr, f"BMKG unavailable ({fbr}) — using Berawan fallback.")
+        st.info(f"ℹ️ {msg}")
+
+    # v3-4: KPI Carousel (proper HTML in iframe)
+    _lbl("Key Risk Indicators", "0")
+    kpis=[
+        ("Area",r["area"],None,""),
+        ("Total Nodes",f"{risk['n_total']:,}",None,""),
+        ("High-Risk",f"{len(risk['vulnerable']):,}",f"↑ {risk['exposure']*100:.1f}%","#f85149"),
+        ("GAT F1",f"{mdl['f1_w']:.4f}",None,""),
+        ("AUC-ROC",f"{mdl['auc_roc']:.4f}",None,""),
+        ("CV F1",f"{mdl['cv_scores'].mean():.4f}",None,""),
+        ("Resilience",f"{casc['resilience_score']:.4f}",None,""),
+        ("Epicenters",str(epi["n_epicenters"]),None,""),
+        ("SFP",f"{risk['sfp']:.2f}%",None,""),
+        ("Tier",risk["tier"],None,c),
+    ]
+    ci=""
+    for lbl,val,delta,vc in kpis:
+        vs=f"color:{vc};" if vc else "color:#e6edf3;"
+        dh=f'<div style="font-size:9px;margin-top:3px;color:#f85149;">{delta}</div>' if delta else ""
+        ci+=f'<div style="flex:0 0 148px;background:linear-gradient(140deg,#090e18,#0d1525);border:1px solid #1e2a3a;border-top:2px solid #1f6feb;border-radius:2px;padding:12px 14px;box-sizing:border-box;"><div style="color:#58a6ff;font-size:8px;text-transform:uppercase;letter-spacing:.2em;font-weight:700;margin-bottom:5px;">{lbl}</div><div style="font-size:17px;font-weight:700;white-space:nowrap;{vs}">{val}</div>{dh}</div>'
+    ch=f"""<!DOCTYPE html><html><head><style>
+    body{{margin:0;padding:0;background:transparent;font-family:'IBM Plex Mono',monospace;overflow:hidden;}}
+    .w{{display:flex;align-items:center;gap:8px;height:80px;}}
+    .vp{{flex:1;overflow:hidden;height:80px;}}
+    .tr{{display:flex;gap:10px;transition:transform .3s;height:80px;}}
+    .n{{background:#090e18;border:1px solid #1f6feb;color:#58a6ff;font-size:14px;font-weight:700;width:28px;height:28px;cursor:pointer;border-radius:2px;display:flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1;font-family:monospace;}}
+    .n:hover{{background:#1f6feb;color:#fff;}}
+    </style></head><body>
+    <div class="w"><button class="n" id="p">&#9664;</button>
+    <div class="vp" id="vp"><div class="tr" id="tr">{ci}</div></div>
+    <button class="n" id="n">&#9654;</button></div>
+    <script>var o=0,s=158,t=document.getElementById('tr'),v=document.getElementById('vp');
+    document.getElementById('p').onclick=function(){{o=Math.min(o+s,0);t.style.transform='translateX('+o+'px)';}};
+    document.getElementById('n').onclick=function(){{var m=-(t.scrollWidth-v.offsetWidth+4);o=Math.max(o-s,m);t.style.transform='translateX('+o+'px)';}};
+    </script></body></html>"""
+    components.html(ch, height=84, scrolling=False)
+
+    # Tier banner
+    pen_pct=(risk["penalty"]-1.)*100
+    src_label="📦 notebook pkl" if mdl.get("model_src")=="notebook_pickle" else "🔧 trained fresh"
+    st.markdown(f"""<div style="margin:16px 0;background:{bg};border:1px solid {bd};border-left:4px solid {c};padding:14px 22px;font-family:'IBM Plex Mono',monospace;">
+      <span style="font-size:8px;letter-spacing:.2em;text-transform:uppercase;color:{c};font-weight:700;">Risk Tier</span>
+      <span style="font-size:20px;font-weight:700;color:{c};margin-left:18px;">{risk['tier']}</span>
+      <span style="font-size:10px;color:#adbac7;margin-left:22px;">
+        SFP {risk['sfp']:.2f}% &middot; {r['weather']} &middot; Stressor {r['stressor_w']:.2f}
+        &middot; Resilience Penalty +{pen_pct:.0f}% &middot; {len(risk['vulnerable']):,} nodes &middot; {src_label}
+      </span></div>""", unsafe_allow_html=True)
+
+    tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs(["SPATIAL MAP","MODEL EVALUATION","CASCADING FAILURE",
+                                               "EPICENTER TRIAGE","POI IMPACT LAYER","FEATURE ANALYSIS"])
+
+    # TAB 1
     with tab1:
-        st.markdown('<div class="section-header">Model Evaluation — Random Forest Baseline</div>',
-                    unsafe_allow_html=True)
+        if view_mode == "Interactive":
+            if "map_html" not in r:
+                with st.spinner("Building interactive map…"):
+                    r["map_html"] = build_map(
+                        r["G"], r["edges"], risk["vulnerable"], r["poi_df"], epi,
+                        r["area"], r["weather"], risk["sfp"], risk["tier"],
+                        mdl["f1_w"], r["stressor_w"],
+                        show_heatmap
+                    )
+                    st.session_state.results = r  
+            components.html(r["map_html"], height=580, scrolling=False)
+        else:
+            with st.spinner("Rendering static map…"):
+                ngdf=gpd.GeoDataFrame({"s":[r["G"].nodes[n].get("risk_score",0) for n in r["G"].nodes()]},
+                                       geometry=r["nodes"].geometry, crs=r["nodes"].crs)
+                fig,ax=plt.subplots(figsize=(13,8),facecolor="#05090f"); ax.set_facecolor("#05090f")
+                r["edges"].plot(ax=ax,color="#141c2f",linewidth=0.7,alpha=1.,aspect=None)
+                lo=ngdf[ngdf["s"]<0.35]; mi=ngdf[(ngdf["s"]>=0.35)&(ngdf["s"]<0.55)]; hi=ngdf[ngdf["s"]>=0.55]
+                if len(lo): lo.plot(ax=ax,color="#388bfd",markersize=2,alpha=.35,aspect=None)
+                if len(mi): ax.scatter(mi.geometry.x,mi.geometry.y,s=mi["s"]*40+4,c="#d29922",alpha=.7,zorder=3)
+                if len(hi): ax.scatter(hi.geometry.x,hi.geometry.y,s=(hi["s"]*60+6).clip(6,80),c="#f85149",alpha=.85,zorder=4)
+                for _,poi in r["poi_df"].iterrows():
+                    ax.plot(float(poi["lon"]),float(poi["lat"]),marker="*",markersize=12,
+                            color=POI_COLORS.get(str(poi["amenity"]),"#6c757d"),
+                            markeredgecolor="white",markeredgewidth=.5,zorder=5)
+                edf2=epi.get("epicenter_df",pd.DataFrame())
+                if not edf2.empty:
+                    for _,er in edf2.iterrows():
+                        ax.scatter(er["centroid_lon"],er["centroid_lat"],s=320,marker="X",c=["#fff"],zorder=6,edgecolors=c,linewidths=1.5)
+                        ax.annotate(f"EP-{int(er['cluster_id'])+1}",(er["centroid_lon"],er["centroid_lat"]),
+                                    fontsize=8,fontweight="bold",color="white",xytext=(0,11),textcoords="offset points",ha="center",
+                                    bbox=dict(boxstyle="round,pad=0.25",fc="#1a1a2e",alpha=.85,ec="none"))
+                ax.set_title(f"{r['area'].upper()} · GAT F1={mdl['f1_w']:.4f} · SFP {risk['sfp']:.2f}% [{risk['tier']}] · {r['weather']}",
+                              color="#adbac7",fontsize=10,fontfamily="monospace",pad=14)
+                ax.tick_params(colors="#1e2a3a",labelcolor="#6e7681",labelsize=7)
+                for sp in ax.spines.values(): sp.set_edgecolor("#1e2a3a")
+                ax.legend(handles=[mpatches.Patch(facecolor="#f85149",label=f"High >0.55 ({len(hi):,})"),
+                                    mpatches.Patch(facecolor="#d29922",label=f"Moderate 0.35–0.55 ({len(mi):,})"),
+                                    mpatches.Patch(facecolor="#388bfd",label=f"Low <0.35 ({len(lo):,})")],
+                           facecolor="#090e18",edgecolor="#1e2a3a",labelcolor="#adbac7",fontsize=8)
+                plt.tight_layout()
+            st.pyplot(fig, width='stretch'); plt.close(fig)
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Accuracy",          f"{r['acc']:.4f}")
-        m2.metric("F1 (weighted)",      f"{r['f1']:.4f}")
-        m3.metric("F1 (macro)",         f"{r['f1_mac']:.4f}")
-        m4.metric("CV F1 Mean (5-fold)", f"{r['cv_scores'].mean():.4f}")
-
-        fig2, axes = plt.subplots(1, 3, figsize=(16, 5))
-        fig2.suptitle("Random Forest — Evaluation Suite", fontsize=12, fontweight="bold")
-
-        # Confusion Matrix
-        ConfusionMatrixDisplay(r['cm'], display_labels=['Low Risk', 'High Risk']).plot(
-            ax=axes[0], colorbar=False, cmap='Blues'
-        )
-        axes[0].set_title("Confusion Matrix")
-        axes[0].set_facecolor(DARK_SURF)
-
-        # Feature Importance
-        imp_df = pd.DataFrame({
-            "feature"   : FEAT_COLS,
-            "importance": r["rf"].feature_importances_
-        }).sort_values("importance")
-        bar_colors = [C_RED if i == imp_df["importance"].idxmax() else C_BLUE for i in imp_df.index]
-        axes[1].barh(imp_df["feature"], imp_df["importance"],
-                     color=bar_colors, edgecolor=DARK_BG, height=0.5)
-        axes[1].set_title("Feature Importance (MDI)")
-        axes[1].set_xlabel("Mean Decrease in Impurity")
-
-        # CV Scores
-        axes[2].bar(range(1, 6), r["cv_scores"], color=C_BLUE, edgecolor=DARK_BG, width=0.55)
-        axes[2].axhline(r["cv_scores"].mean(), color=C_RED, linewidth=1.6,
-                        linestyle="--", label=f"Mean = {r['cv_scores'].mean():.4f}")
-        axes[2].set_title("5-Fold CV F1-Score (weighted)")
-        axes[2].set_xlabel("Fold")
-        axes[2].set_ylabel("F1")
-        axes[2].set_ylim(0, 1.05)
-        axes[2].set_xticks(range(1, 6))
-        axes[2].set_xticklabels([f"Fold {i}" for i in range(1, 6)])
-        axes[2].legend(fontsize=9)
-
-        plt.tight_layout()
-        st.pyplot(fig2, use_container_width=True)
-
-        with st.expander("Classification Report"):
-            report = classification_report(r['y_test'], r['y_pred'],
-                                           target_names=['Low Risk', 'High Risk'])
-            st.code(report, language=None)
-
-    # ── Tab 2: EDA ────────────────────────────────────────────────────────────
+    # TAB 2
     with tab2:
-        st.markdown('<div class="section-header">Exploratory Data Analysis — Feature Matrix</div>',
-                    unsafe_allow_html=True)
+        _lbl("Phase 2 GAT vs Phase 1 RF — Benchmark","0")
+        e1,e2,e3,e4,e5=st.columns(5)
+        e1.metric("Accuracy",f"{mdl['acc']:.4f}"); e2.metric("F1 Weighted",f"{mdl['f1_w']:.4f}")
+        e3.metric("F1 Macro",f"{mdl['f1_mac']:.4f}"); e4.metric("AUC-ROC",f"{mdl['auc_roc']:.4f}")
+        e5.metric("CV F1 (5-fold)",f"{mdl['cv_scores'].mean():.4f} ± {mdl['cv_scores'].std():.4f}")
+        if notebook_bundle:
+            nb_m2=notebook_bundle.get("metrics",{})
+            st.caption(f"Notebook: F1={nb_m2.get('f1_weighted','?')} · AUC={nb_m2.get('auc_roc','?')} · "
+                       f"CV={nb_m2.get('cv_f1_mean','?')} · RF={nb_m2.get('f1_baseline_rf','?')}")
+        with st.spinner("Rendering model evaluation charts…"):
+            fig,axes=plt.subplots(2,3,figsize=(16,8),facecolor="#05090f")
+            for ax in axes.flat:
+                ax.set_facecolor("#090e18")
+                for sp in ax.spines.values(): sp.set_edgecolor("#1e2a3a")
+                ax.tick_params(colors="#1e2a3a",labelcolor="#adbac7",labelsize=8)
+            ConfusionMatrixDisplay(mdl["conf_mat"],display_labels=["Low Risk","High Risk"]).plot(ax=axes[0,0],colorbar=False,cmap="Blues")
+            axes[0,0].set_title("Confusion Matrix",color="#adbac7",fontfamily="monospace",fontsize=10)
+            axes[0,0].set_xlabel("Predicted",color="#6e7681",fontsize=9); axes[0,0].set_ylabel("Actual",color="#6e7681",fontsize=9)
+            imdf=pd.DataFrame({"feature":mdl["feat_cols"],"importance":mdl["clf"].feature_importances_}).sort_values("importance")
+            cols_=[("#f4a261" if f in ["poi_criticality","clustering_coefficient","pagerank"] else "#388bfd") for f in imdf["feature"]]
+            axes[0,1].barh(imdf["feature"],imdf["importance"],color=cols_,edgecolor="#05090f",height=.5)
+            axes[0,1].set_title("Feature Importance\n(orange=P2 new)",color="#adbac7",fontfamily="monospace",fontsize=10)
+            axes[0,1].set_xlabel("MDI",color="#6e7681",fontsize=9)
+            axes[0,2].bar(range(1,6),mdl["cv_scores"],color="#1a3a5c",edgecolor="#05090f",width=.6)
+            axes[0,2].axhline(mdl["cv_scores"].mean(),color="#388bfd",linewidth=1.5,linestyle="--",label=f"Mean={mdl['cv_scores'].mean():.4f}")
+            axes[0,2].set_title("5-Fold CV F1",color="#adbac7",fontfamily="monospace",fontsize=10)
+            axes[0,2].set_ylim(0,1.05); axes[0,2].legend(facecolor="#090e18",edgecolor="#1e2a3a",labelcolor="#adbac7",fontsize=8)
+            mc=["F1 Weighted","F1 Macro","AUC-ROC"]; xp=np.arange(3)
+            p1v=[mdl["f1_base"],mdl["f1mac_base"],0.]; p2v=[mdl["f1_w"],mdl["f1_mac"],mdl["auc_roc"]]
+            axes[1,0].bar(xp-.2,p1v,.35,label="Phase 1 RF",color="#2d3748",edgecolor="#05090f")
+            axes[1,0].bar(xp+.2,p2v,.35,label="Phase 2 GAT+GBM",color="#388bfd",edgecolor="#05090f")
+            axes[1,0].set_title("P1 RF vs P2 GAT",color="#adbac7",fontfamily="monospace",fontsize=10)
+            axes[1,0].set_xticks(xp); axes[1,0].set_xticklabels(mc,fontsize=8); axes[1,0].set_ylim(0,1.1)
+            axes[1,0].legend(facecolor="#090e18",edgecolor="#1e2a3a",labelcolor="#adbac7",fontsize=8)
+            for i,(p1,p2) in enumerate(zip(p1v,p2v)):
+                if p1>0: axes[1,0].text(i+.2,p2+.02,f"+{(p2-p1)*100:.1f}pp",ha="center",color="#3fb950",fontsize=8)
+            rsc=[r["G"].nodes[n].get("risk_score",0) for n in r["G"].nodes()]
+            vls=[r["G"].nodes[n].get("vulnerability","Low") for n in r["G"].nodes()]
+            axes[1,1].hist([s for s,l in zip(rsc,vls) if l=="Low"],bins=40,color="#1f6feb",alpha=.7,label="Low",edgecolor="#05090f",linewidth=.3)
+            axes[1,1].hist([s for s,l in zip(rsc,vls) if l=="High"],bins=40,color="#f85149",alpha=.7,label="High",edgecolor="#05090f",linewidth=.3)
+            axes[1,1].axvline(HIGH_RISK_THRESHOLD,color="#3fb950",linewidth=1.5,linestyle="--",label=f"Thr={HIGH_RISK_THRESHOLD}")
+            axes[1,1].set_title("Risk Score Distribution",color="#adbac7",fontfamily="monospace",fontsize=10)
+            axes[1,1].legend(facecolor="#090e18",edgecolor="#1e2a3a",labelcolor="#adbac7",fontsize=8)
+            elevs=[r["G"].nodes[n].get("elevation",0) for n in r["G"].nodes()]
+            axes[1,2].hist([e for e,l in zip(elevs,vls) if l=="Low"],bins=35,color="#1f6feb",alpha=.7,label="Low",edgecolor="#05090f",linewidth=.3)
+            axes[1,2].hist([e for e,l in zip(elevs,vls) if l=="High"],bins=35,color="#f85149",alpha=.7,label="High",edgecolor="#05090f",linewidth=.3)
+            axes[1,2].axvline(flood_threshold,color="#d29922",linewidth=1.5,linestyle="--",label=f"Thr {flood_threshold}m")
+            axes[1,2].set_title("Elevation by Class",color="#adbac7",fontfamily="monospace",fontsize=10)
+            axes[1,2].legend(facecolor="#090e18",edgecolor="#1e2a3a",labelcolor="#adbac7",fontsize=8)
+            fig.patch.set_facecolor("#05090f"); plt.tight_layout()
+        st.pyplot(fig,width='stretch'); plt.close(fig)
+        with st.expander("Classification Report"):
+            cr=mdl["class_rep"]
+            st.dataframe(pd.DataFrame([{"Class":cls,"Precision":f"{cr.get(cls,{}).get('precision',0):.4f}",
+                "Recall":f"{cr.get(cls,{}).get('recall',0):.4f}","F1":f"{cr.get(cls,{}).get('f1-score',0):.4f}",
+                "Support":int(cr.get(cls,{}).get("support",0))} for cls in ["Low Risk","High Risk"]]),
+                width='stretch')
 
-        df = r["df"]
-        df['label_str'] = df['flood_label'].map({0: 'Low Risk', 1: 'High Risk'})
-
-        fig3, axes = plt.subplots(2, 3, figsize=(16, 10))
-        fig3.suptitle("EDA — RESILIA Feature Matrix", fontsize=13, fontweight="bold", y=1.01)
-
-        # Correlation heatmap
-        corr = df[FEAT_COLS_DISPLAY + ['flood_label']].corr()
-        corr_vals = corr.values
-        im = axes[0, 0].imshow(corr_vals, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
-        plt.colorbar(im, ax=axes[0, 0], shrink=0.8)
-        clabels = list(corr.columns)
-        axes[0, 0].set_xticks(range(len(clabels)))
-        axes[0, 0].set_yticks(range(len(clabels)))
-        axes[0, 0].set_xticklabels(clabels, rotation=45, ha="right", fontsize=7)
-        axes[0, 0].set_yticklabels(clabels, fontsize=7)
-        for i in range(len(clabels)):
-            for j in range(len(clabels)):
-                axes[0, 0].text(j, i, f"{corr_vals[i, j]:.2f}",
-                                ha="center", va="center", fontsize=7, color=C_TEXT)
-        axes[0, 0].set_title("Feature Correlation Matrix")
-
-        # Class balance
-        counts = df['flood_label'].value_counts().sort_index()
-        bars = axes[0, 1].bar(
-            ['Low Risk', 'High Risk'],
-            [counts.get(0, 0), counts.get(1, 0)],
-            color=[C_TEAL, C_RED], edgecolor=DARK_BG, width=0.5
-        )
-        axes[0, 1].set_title("Class Balance")
-        axes[0, 1].set_ylabel("Node Count")
-        for bar, v in zip(bars, [counts.get(0, 0), counts.get(1, 0)]):
-            axes[0, 1].text(bar.get_x() + bar.get_width() / 2,
-                            v + 10, f"{v:,}", ha='center', fontsize=10, fontweight='bold', color=C_TEXT)
-
-        # Elevation by class
-        low_elev  = df[df['flood_label'] == 0]['elevation'].values
-        high_elev = df[df['flood_label'] == 1]['elevation'].values
-        bp = axes[0, 2].boxplot([low_elev, high_elev], labels=['Low Risk', 'High Risk'],
-                                patch_artist=True, widths=0.45,
-                                medianprops=dict(color=C_TEXT, linewidth=1.5))
-        bp['boxes'][0].set_facecolor(C_TEAL)
-        bp['boxes'][1].set_facecolor(C_RED)
-        for element in ['whiskers', 'caps', 'fliers']:
-            for item in bp[element]:
-                item.set_color(C_MUTED)
-        axes[0, 2].axhline(FLOOD_THRESHOLD_M, color=C_RED, linestyle='--',
-                           linewidth=1.2, label=f'Threshold ({FLOOD_THRESHOLD_M} m)')
-        axes[0, 2].set_title("Elevation by Class")
-        axes[0, 2].set_xlabel("")
-        axes[0, 2].set_ylabel("Elevation (m)")
-        axes[0, 2].legend(fontsize=9)
-
-        # Centrality distributions
-        for idx, (feat, color) in enumerate([
-            ('degree_centrality',      C_BLUE),
-            ('betweenness_centrality', C_YELLOW),
-            ('closeness_centrality',   "#8ecae6"),
-        ]):
-            axes[1, idx].hist(df[feat], bins=40, color=color,
-                              edgecolor=DARK_BG, linewidth=0.3, alpha=0.85)
-            axes[1, idx].set_title(feat.replace('_', ' ').title())
-            axes[1, idx].set_ylabel("Count")
-
-        plt.tight_layout()
-        st.pyplot(fig3, use_container_width=True)
-
-    # ── Tab 3: Network Resilience ─────────────────────────────────────────────
+    # TAB 3
     with tab3:
-        res = r["resilience"]
-        st.markdown('<div class="section-header">Network Resilience — Flood Impact Simulation</div>',
-                    unsafe_allow_html=True)
+        sd=casc["sim_df"]
+        _lbl("Network Resilience (GAT-ordered removal)","0")
+        r1,r2,r3,r4=st.columns(4)
+        r1.metric("Resilience Score",f"{casc['resilience_score']:.4f}")
+        r2.metric("Efficiency Degradation",f"{casc['eff_degradation']*100:.1f}%")
+        r3.metric("LCC Fragmentation",f"{casc['lcc_degradation']*100:.1f}%")
+        r4.metric("Resilience Penalty",f"+{(risk['penalty']-1.)*100:.0f}%")
+        with st.spinner("Rendering cascade charts…"):
+            fig,axes=plt.subplots(1,3,figsize=(16,5),facecolor="#05090f")
+            for ax in axes:
+                ax.set_facecolor("#090e18")
+                for sp in ax.spines.values(): sp.set_edgecolor("#1e2a3a")
+                ax.tick_params(colors="#1e2a3a",labelcolor="#adbac7",labelsize=8)
+            for ax,(col,lbl2,color) in zip(axes,[("global_efficiency","Global Efficiency","#f85149"),
+                                                   ("lcc_fraction","Largest Component","#388bfd"),
+                                                   ("avg_clustering","Avg Clustering","#3fb950")]):
+                ax.plot(sd["round"],sd[col],"o-",color=color,linewidth=2.5,markersize=7,markeredgecolor="#05090f")
+                ax.fill_between(sd["round"],sd[col],alpha=.12,color=color)
+                bl=float(sd.iloc[0][col])
+                ax.axhline(bl,color="#484f58",linestyle=":",linewidth=1,label=f"Baseline={bl:.4f}")
+                ax.set_title(lbl2,color="#adbac7",fontfamily="monospace",fontsize=10)
+                ax.set_xlabel("Round",color="#6e7681",fontsize=9); ax.set_ylabel(lbl2,color="#6e7681",fontsize=9)
+                ax.set_xlim(-.2,len(sd)-.8); ax.legend(facecolor="#090e18",edgecolor="#1e2a3a",labelcolor="#adbac7",fontsize=8)
+            fig.patch.set_facecolor("#05090f"); plt.tight_layout()
+        st.pyplot(fig,width='stretch'); plt.close(fig)
+        st.dataframe(sd.style.format({"global_efficiency":"{:.4f}","lcc_fraction":"{:.4f}",
+                                       "avg_clustering":"{:.4f}","pct_removed":"{:.1f}%"}),width='stretch'  )
 
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Baseline LCC",       f"{res['baseline_lcc']:,}")
-        r2.metric("Post-Flood LCC",     f"{res['post_lcc']:,}",
-                  delta=f"-{res['baseline_lcc'] - res['post_lcc']:,} nodes",
-                  delta_color="inverse")
-        r3.metric("Connectivity Loss",  f"{res['connectivity_loss']:.1f}%", delta_color="inverse")
-        r4.metric("New Isolated Clusters", f"{res['new_iso_clusters']}")
-
-        fig4, axes = plt.subplots(1, 3, figsize=(16, 5))
-        fig4.suptitle("Network Resilience — Flood Impact Analysis", fontsize=12, fontweight="bold")
-
-        # LCC comparison
-        cats   = ['Baseline LCC', 'Post-Flood LCC']
-        vals   = [res['baseline_lcc'], res['post_lcc']]
-        bcols  = [C_BLUE, C_RED]
-        bars   = axes[0].bar(cats, vals, color=bcols, edgecolor=DARK_BG, width=0.45)
-        axes[0].set_title("Largest Connected Component")
-        axes[0].set_ylabel("Node Count")
-        for bar, v in zip(bars, vals):
-            axes[0].text(bar.get_x() + bar.get_width() / 2, v + 10,
-                         f"{v:,}", ha='center', fontsize=10, fontweight='bold', color=C_TEXT)
-
-        # Node composition waterfall
-        n_removed  = len(r["vulnerable"])
-        n_isolated = r["n_total"] - n_removed - res['post_lcc']
-        comp_labels = ['Total Nodes', 'High Risk\n(removed)', 'Remaining\nConnected', 'Isolated\nFragments']
-        comp_values = [r["n_total"], n_removed, res['post_lcc'], max(0, n_isolated)]
-        comp_colors = [C_BLUE, C_RED, C_TEAL, C_YELLOW]
-        axes[1].bar(comp_labels, comp_values, color=comp_colors, edgecolor=DARK_BG, width=0.55)
-        axes[1].set_title("Node Composition — Flood Scenario")
-        axes[1].set_ylabel("Node Count")
-        for i, (lbl, v) in enumerate(zip(comp_labels, comp_values)):
-            axes[1].text(i, v + 10, f"{v:,}", ha='center', fontsize=9, color=C_TEXT)
-
-        # Risk score distribution: high vs low
-        _df_r = r["df"]
-        bins = np.linspace(0, 1, 25)
-        axes[2].hist(_df_r[_df_r['ml_pred'] == 0]['risk_score'], bins=bins,
-                     color=C_BLUE, alpha=0.7, label=f"Low Risk ({int((_df_r['ml_pred']==0).sum())})", edgecolor=DARK_BG)
-        axes[2].hist(_df_r[_df_r['ml_pred'] == 1]['risk_score'], bins=bins,
-                     color=C_RED, alpha=0.7, label=f"High Risk ({int((_df_r['ml_pred']==1).sum())})", edgecolor=DARK_BG)
-        axes[2].axvline(0.5, color=C_YELLOW, linewidth=1.5, linestyle='--', label='Decision boundary')
-        axes[2].set_title("Risk Score Distribution by Class")
-        axes[2].set_xlabel("RF Risk Score  P(High Risk)")
-        axes[2].set_ylabel("Node Count")
-        axes[2].set_xlim(0, 1)
-        axes[2].legend(fontsize=9)
-
-        plt.tight_layout()
-        st.pyplot(fig4, use_container_width=True)
-
-    # ── Tab 4: Chokepoints ────────────────────────────────────────────────────
+    # TAB 4
     with tab4:
-        cdf = r["critical_df"]
-        st.markdown('<div class="section-header">Critical Chokepoint Ranking</div>',
-                    unsafe_allow_html=True)
-        st.caption("High-risk nodes ranked by betweenness centrality — logistics disruption potential")
+        edf=epi["epicenter_df"]
+        ep1,ep2,ep3=st.columns(3)
+        ep1.metric("Epicenter Clusters",epi["n_epicenters"])
+        ep2.metric("Noise Nodes",epi["n_noise"])
+        ep3.metric("DBSCAN ε-radius",f"{dbscan_eps} m")
+        if edf.empty:
+            st.info("No clusters — try increasing ε-radius or reducing min samples.")
+        else:
+            _lbl("Triage Table — Composite Score (50% Risk · 30% POI · 20% Density)","0")
+            s2=edf.copy(); s2.index=[f"EP-{int(row)+1}" for row in edf["cluster_id"]]
+            st.dataframe(s2[["n_nodes","centroid_lat","centroid_lon","mean_risk_score","mean_poi_crit","triage_score"]
+                          ].style.format({"centroid_lat":"{:.6f}","centroid_lon":"{:.6f}","mean_risk_score":"{:.4f}",
+                                           "mean_poi_crit":"{:.4f}","triage_score":"{:.4f}"}).background_gradient(subset=["triage_score"],cmap="Reds"),
+                          width='stretch')
+            with st.spinner("Rendering triage charts…"):
+                fig2,axes2=plt.subplots(1,2,figsize=(14,5),facecolor="#05090f")
+                for ax in axes2:
+                    ax.set_facecolor("#090e18")
+                    for sp in ax.spines.values(): sp.set_edgecolor("#1e2a3a")
+                    ax.tick_params(colors="#1e2a3a",labelcolor="#adbac7",labelsize=8)
+                pal=plt.cm.plasma(np.linspace(.2,.9,max(len(edf),1)))
+                eps2=edf.sort_values("triage_score",ascending=True)
+                bl2=[f"EP-{int(r2)+1}" for r2 in eps2["cluster_id"]]
+                bars=axes2[0].barh(bl2,eps2["triage_score"],color=pal,edgecolor="#05090f")
+                axes2[0].set_title("Composite Triage Score",color="#adbac7",fontfamily="monospace",fontsize=10)
+                axes2[0].set_xlabel("Score",color="#6e7681",fontsize=9)
+                for bar,(_,row2) in zip(bars,eps2.iterrows()):
+                    axes2[0].text(bar.get_width()+.005,bar.get_y()+bar.get_height()/2,
+                                   f"n={row2['n_nodes']}",va="center",color="#adbac7",fontsize=8)
+                sc=axes2[1].scatter(edf["mean_risk_score"],edf["mean_poi_crit"],s=edf["n_nodes"]*20,
+                                     c=edf["triage_score"],cmap="plasma",alpha=.85,edgecolors="#05090f",linewidth=.8)
+                for _,row2 in edf.iterrows():
+                    axes2[1].annotate(f"EP-{int(row2['cluster_id'])+1}",(row2["mean_risk_score"],row2["mean_poi_crit"]),
+                                       fontsize=7,ha="center",va="bottom",xytext=(0,6),textcoords="offset points",
+                                       color="#e6edf3",fontfamily="monospace")
+                plt.colorbar(sc,ax=axes2[1],label="Triage Score")
+                axes2[1].set_title("Risk vs POI (bubble=density)",color="#adbac7",fontfamily="monospace",fontsize=10)
+                fig2.patch.set_facecolor("#05090f"); plt.tight_layout()
+            st.pyplot(fig2,width='stretch'); plt.close(fig2)
 
-        fig5, axes = plt.subplots(1, 2, figsize=(16, 6))
-        fig5.suptitle("Critical Chokepoint Analysis — Top 10 High-Risk Nodes",
-                       fontsize=12, fontweight="bold")
+    # TAB 5
+    with tab5:
+        pdf=r["poi_df"]; _lbl("Critical Infrastructure Inventory","0"); st.dataframe(pdf,width='stretch')
+        ac=pdf["amenity"].value_counts()
+        nc=sum(1 for _,d in r["G"].nodes(data=True) if d.get("poi_criticality",0)>0)
+        nhp=sum(1 for _,d in r["G"].nodes(data=True) if d.get("vulnerability")=="High" and d.get("poi_criticality",0)>0)
+        p1,p2,p3,p4=st.columns(4)
+        p1.metric("Total POIs",len(pdf)); p2.metric("Facility Types",len(ac))
+        p3.metric("Nodes in POI Zone",f"{nc:,}"); p4.metric("High-Risk in POI Zone",f"{nhp:,}",delta="overlap",delta_color="inverse")
+        with st.spinner("Rendering POI charts…"):
+            fig3,axes3=plt.subplots(1,2,figsize=(14,5),facecolor="#05090f")
+            for ax in axes3:
+                ax.set_facecolor("#090e18")
+                for sp in ax.spines.values(): sp.set_edgecolor("#1e2a3a")
+                ax.tick_params(colors="#1e2a3a",labelcolor="#adbac7",labelsize=8)
+            axes3[0].barh(ac.index,ac.values,color=[POI_COLORS.get(a,"#6c757d") for a in ac.index],edgecolor="#05090f")
+            axes3[0].set_title("POI by Facility",color="#adbac7",fontfamily="monospace",fontsize=10)
+            axes3[0].set_xlabel("Count",color="#6e7681",fontsize=9)
+            psc=[d.get("poi_criticality",0) for _,d in r["G"].nodes(data=True)]
+            axes3[1].hist([s for s in psc if s>0],bins=30,color="#f4a261",edgecolor="#05090f",linewidth=.3)
+            axes3[1].set_title("POI Criticality (within 300m)",color="#adbac7",fontfamily="monospace",fontsize=10)
+            fig3.patch.set_facecolor("#05090f"); plt.tight_layout()
+        st.pyplot(fig3,width='stretch'); plt.close(fig3)
 
-        top10 = cdf.head(10)
-        norm      = mcolors.Normalize(vmin=0, vmax=1)
-        colors    = [plt.cm.plasma(norm(v)) for v in top10['risk_score'].values]
+    # TAB 6
+    with tab6:
+        _lbl("Phase 2 Feature Matrix — All 7 Features","0")
+        fds=r["feat_df"].copy()
+        st.dataframe(fds[FEAT_COLS_V2+["flood_label"]].describe().round(4),width='stretch')
+        with st.spinner("Rendering feature distribution charts…"):
+            fig4,axes4=plt.subplots(2,4,figsize=(18,8),facecolor="#05090f")
+            fig4.suptitle(f"Feature Distribution — {r['area']}",color="#e6edf3",fontfamily="monospace",fontsize=12)
+            for ax in axes4.flat:
+                ax.set_facecolor("#090e18")
+                for sp in ax.spines.values(): sp.set_edgecolor("#1e2a3a")
+                ax.tick_params(colors="#1e2a3a",labelcolor="#adbac7",labelsize=7)
+            for i,feat in enumerate(FEAT_COLS_V2):
+                ax=axes4[i//4][i%4]
+                lv=fds[fds["flood_label"]==0][feat]; hv=fds[fds["flood_label"]==1][feat]
+                ax.hist(lv.values,bins=35,color="#1f6feb",alpha=.65,label="Low",edgecolor="#05090f",linewidth=.2)
+                ax.hist(hv.values,bins=35,color="#f85149",alpha=.65,label="High",edgecolor="#05090f",linewidth=.2)
+                pt="[P2]" if feat in ["poi_criticality","clustering_coefficient","pagerank"] else "[P1]"
+                ax.set_title(f"{pt} {feat.replace('_',' ')}",color="#adbac7",fontfamily="monospace",fontsize=8)
+                ax.legend(facecolor="#090e18",edgecolor="#1e2a3a",labelcolor="#adbac7",fontsize=7)
+            axc=axes4[1][3]; cm2=fds[FEAT_COLS_V2].astype(float).corr()
+            axc.imshow(cm2.values,cmap="coolwarm",vmin=-1,vmax=1,aspect="auto")
+            sn=["elev","deg","btw","clo","poi","clust","pr"]
+            axc.set_xticks(range(7)); axc.set_yticks(range(7))
+            axc.set_xticklabels(sn,fontsize=6,color="#adbac7",rotation=45)
+            axc.set_yticklabels(sn,fontsize=6,color="#adbac7")
+            for ii in range(7):
+                for jj in range(7):
+                    axc.text(jj,ii,f"{cm2.values[ii,jj]:.1f}",ha="center",va="center",fontsize=5,color="white")
+            axc.set_title("Feature Correlation",color="#adbac7",fontfamily="monospace",fontsize=8)
+            fig4.patch.set_facecolor("#05090f"); plt.tight_layout()
+        st.pyplot(fig4, width='stretch'); plt.close(fig4)
 
-        # Betweenness
-        axes[0].barh(range(len(top10)), top10['betweenness_centrality'],
-                     color=colors, edgecolor=DARK_BG, height=0.6)
-        axes[0].set_yticks(range(len(top10)))
-        axes[0].set_yticklabels([f"#{i+1}" for i in range(len(top10))], fontsize=9)
-        axes[0].set_title("Betweenness Centrality (Chokepoint Severity)")
-        axes[0].set_xlabel("Betweenness Centrality")
-        axes[0].invert_yaxis()
-        sm = ScalarMappable(cmap='plasma', norm=norm)
-        sm.set_array([])
-        cbar = plt.colorbar(sm, ax=axes[0], shrink=0.7, pad=0.02)
-        cbar.set_label('Risk Score', labelpad=8)
-
-        # Risk scores
-        axes[1].barh(range(len(top10)), top10['risk_score'],
-                     color=colors, edgecolor=DARK_BG, height=0.6)
-        axes[1].axvline(0.5, color=C_YELLOW, linewidth=1.2, linestyle='--',
-                        label='Decision boundary (0.5)')
-        axes[1].set_yticks(range(len(top10)))
-        axes[1].set_yticklabels([f"#{i+1}" for i in range(len(top10))], fontsize=9)
-        axes[1].set_xlim(0, 1)
-        axes[1].set_title("RF Risk Score  P(High)")
-        axes[1].set_xlabel("Risk Score")
-        axes[1].invert_yaxis()
-        axes[1].legend(fontsize=9)
-
-        plt.tight_layout()
-        st.pyplot(fig5, use_container_width=True)
-
-        # Top 15 table
-        st.markdown('<div class="section-header">Top 15 Nodes</div>', unsafe_allow_html=True)
-        top15 = cdf[['node_id', 'elevation', 'betweenness_centrality',
-                      'closeness_centrality', 'risk_score']].head(15).copy()
-        top15.columns = ['Node ID', 'Elevation (m)', 'Betweenness', 'Closeness', 'Risk Score']
-        top15 = top15.round(5)
-        top15.index = range(1, len(top15) + 1)
-        st.dataframe(top15, use_container_width=True)
-
-    # ── Policy Recommendation ─────────────────────────────────────────────────
-    st.markdown('<div class="section-header">Policy Recommendation</div>', unsafe_allow_html=True)
-    c   = TIER_COLOR[r["tier"]]
-    bg  = TIER_BG[r["tier"]]
-    bdr = TIER_BORDER[r["tier"]]
-
-    st.markdown(f"""
-    <div style="background:{bg};border:1px solid {bdr};border-left:3px solid {c};
-                border-radius:2px;padding:24px 28px;
-                font-family:'Space Mono',monospace;">
-      <div style="display:flex;align-items:baseline;gap:18px;margin-bottom:16px;flex-wrap:wrap;">
-        <span style="color:{c};font-weight:700;font-size:10px;
-                     text-transform:uppercase;letter-spacing:0.14em;">
-          {r['tier']} RISK
-        </span>
-        <span style="color:#5a8aaa;font-size:9px;letter-spacing:0.06em;">
-          SFP {r['sfp']:.2f}% &nbsp;·&nbsp; {r['weather']} &nbsp;·&nbsp;
-          stressor={r['stressor_w']:.2f} &nbsp;·&nbsp;
-          connectivity loss={r['resilience']['connectivity_loss']:.1f}%
-        </span>
+    # Policy
+    n_epi=epi["n_epicenters"]; top_label=""
+    if n_epi>0 and not epi["epicenter_df"].empty:
+        te=epi["epicenter_df"].iloc[0]
+        top_label=f"Priority EP-{int(te['cluster_id'])+1} (triage {te['triage_score']:.4f}, {te['n_nodes']} nodes) at ({te['centroid_lat']}, {te['centroid_lon']})."
+    src_note="Model from notebook pickle." if mdl.get("model_src")=="notebook_pickle" else "Model trained fresh."
+    st.markdown(f"""<div style="margin-top:28px;background:{bg};border:1px solid {bd};border-left:4px solid {c};padding:20px 26px;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:{c};letter-spacing:.2em;text-transform:uppercase;font-weight:700;margin-bottom:12px;">Policy Recommendation / {risk['tier']}</div>
+      <div style="font-family:'IBM Plex Sans',sans-serif;font-size:14px;color:#e6edf3;line-height:1.8;">
+        Deploy emergency drainage to <b>{len(risk['vulnerable']):,} GAT flood-prone nodes</b> in {r['area']}.
+        Stressor <b>{r['stressor_w']:.2f}</b> ({r['weather']}) + resilience penalty <b>{(risk['penalty']-1.)*100:.0f}%</b>
+        → SFP <b style="color:{c};">{risk['sfp']:.2f}%</b>.
+        {f'Pre-position across <b>{n_epi} DBSCAN epicenters</b>. {top_label}' if n_epi>0 else ''}
+        Reroute logistics from low-elevation clusters.
       </div>
-      <div style="color:#8ab0c8;font-size:13px;line-height:1.9;font-family:'Barlow',sans-serif;font-weight:400;">
-        Prioritize emergency drainage remediation across
-        <b style="color:#c8d8e8;">{len(r['vulnerable']):,} RF-identified flood-prone nodes</b>
-        in {r['area']}.
-        Reroute logistics corridors away from the
-        <b style="color:#c8d8e8;">{len(r['resilience'].get('post_lcc_nodes', []))}-node</b>
-        post-flood connected component.
-        Deploy real-time sensor network at the
-        <b style="color:#c8d8e8;">top 15 chokepoint intersections</b>
-        identified by betweenness centrality analysis.
-        Phase 2 upgrade: replace Random Forest baseline with GraphSAGE/GAT on
-        Azure ML for improved spatial generalization.
-      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#6e7681;margin-top:10px;">{src_note}</div>
     </div>""", unsafe_allow_html=True)
+    st.markdown("""<div style="height:1px;background:linear-gradient(90deg,transparent,#1e2a3a 40%,#1f6feb 100%);margin-top:40px;"></div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#3d4a58;text-align:right;padding:12px 0;letter-spacing:.1em;">
+      RESELIA v2.0 / GAT+GBM · Polars · DBSCAN · NetworkX · OSM ODbL · BMKG</div>""",
+                unsafe_allow_html=True)
 
 else:
-    # Empty state
-    st.markdown("""
-    <div style="padding: 120px 0 100px;text-align:center;">
-      <div style="font-family:'Space Mono',monospace;font-size:9px;
-                  text-transform:uppercase;letter-spacing:0.28em;color:#2d6a9f;
-                  margin-bottom:24px;">
-        System Idle — Awaiting Input
-      </div>
-      <div style="font-family:'Barlow Condensed',sans-serif;font-size:40px;font-weight:800;
-                  color:#4a7fa8;line-height:1.15;max-width:520px;margin:0 auto 20px;
-                  text-transform:uppercase;letter-spacing:-0.01em;">
-        Select a study area and run the analysis pipeline.
-      </div>
-      <div style="font-family:'Space Mono',monospace;font-size:9px;
-                  color:#2d5a7a;letter-spacing:0.08em;">
-        OSM &nbsp;·&nbsp; Random Forest &nbsp;·&nbsp; BMKG &nbsp;·&nbsp; Network Resilience
-      </div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown("""<div style="text-align:center;padding:80px 0;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#1e2a3a;letter-spacing:.35em;text-transform:uppercase;margin-bottom:20px;">System Standby</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:32px;font-weight:700;color:#0d1525;letter-spacing:.04em;margin-bottom:12px;">RESELIA</div>
+      <div style="font-family:'IBM Plex Sans',sans-serif;font-size:14px;color:#3d4a58;max-width:480px;margin:0 auto;line-height:1.7;">
+        Select a study area and configure parameters in the sidebar,<br>then press <b>▶ RUN ANALYSIS</b> to begin.</div>
+      <div style="margin-top:40px;display:flex;justify-content:center;gap:16px;flex-wrap:wrap;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#388bfd;background:#090e18;border:1px solid #1f6feb;padding:8px 16px;letter-spacing:.1em;">GAT MESSAGE PASSING</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#388bfd;background:#090e18;border:1px solid #1f6feb;padding:8px 16px;letter-spacing:.1em;">DBSCAN EPICENTER TRIAGE</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#388bfd;background:#090e18;border:1px solid #1f6feb;padding:8px 16px;letter-spacing:.1em;">CASCADING FAILURE SIM</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#388bfd;background:#090e18;border:1px solid #1f6feb;padding:8px 16px;letter-spacing:.1em;">PICKLE MODEL PERSISTENCE</div>
+      </div></div>""", unsafe_allow_html=True)
