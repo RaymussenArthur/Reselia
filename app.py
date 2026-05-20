@@ -43,28 +43,35 @@ components.html("""
             var doc = window.parent.document;
             doc.querySelectorAll('button').forEach(function(btn) {
                 if (btn.innerText && btn.innerText.trim().startsWith('keyboard')) {
-                    btn.style.fontSize = '0';
-                    btn.style.color = 'transparent';
-                    btn.setAttribute('data-fixed', '1');
-                    var after = document.createElement('style');
-                    after.textContent = 
-                        'button[data-fixed="1"] { font-size: 0 !important; color: transparent !important; }' +
-                        'button[data-fixed="1"]::after { content: "<<"; font-size: 12px !important; ' +
-                        'color: #58a6ff !important; font-family: monospace !important; font-weight: 700; }';
-                    doc.head.appendChild(after);
+                    Array.from(btn.childNodes).forEach(function(node) {
+                        if (node.nodeType === 3 || node.tagName === 'SPAN') {
+                            node.style && (node.style.display = 'none');
+                        }
+                    });
+                    btn.querySelectorAll('*').forEach(function(el) {
+                        el.style.fontSize = '0';
+                        el.style.visibility = 'hidden';
+                        el.style.width = '0';
+                        el.style.display = 'none';
+                    });
+                    if (!btn.querySelector('.reselia-icon')) {
+                        var span = doc.createElement('span');
+                        span.className = 'reselia-icon';
+                        span.textContent = '≡';
+                        span.style.cssText = 'font-size:26px;color:#58a6ff;font-family:monospace;font-weight:400;visibility:visible;display:inline;width:auto;line-height:1;';
+                        btn.appendChild(span);
+                    }
                 }
             });
         } catch(e) {}
     }
     fixBtn();
-    setTimeout(fixBtn, 300);
-    setTimeout(fixBtn, 800);
-    setTimeout(fixBtn, 1500);
+    setTimeout(fixBtn, 500);
+    setTimeout(fixBtn, 1200);
     try {
-        var observer = new MutationObserver(fixBtn);
-        observer.observe(window.parent.document.body, {
-            childList: true, subtree: true
-        });
+        new MutationObserver(fixBtn).observe(
+            window.parent.document.body, {childList:true, subtree:true}
+        );
     } catch(e) {}
 })();
 </script>
@@ -465,7 +472,14 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
     cfg = AREA_CONFIGS[area]; tc = TIER_COLOR[tier]; zoom = _zoom_from_dist(cfg["dist"])
 
     m = folium.Map(location=list(cfg["center"]), zoom_start=zoom,
-                   tiles="CartoDB dark_matter", prefer_canvas=True)
+               tiles=None, prefer_canvas=True)
+    folium.TileLayer(
+        tiles="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+        attr="CartoDB",
+        name="Filters",
+        max_zoom=19,
+        subdomains="abcd"
+    ).add_to(m)
 
     # ── Edges (base layer, always visible) ────────────────────────────────────
     edge_list = list(edges.iterrows())
