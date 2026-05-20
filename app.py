@@ -43,64 +43,27 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
 *, html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap');
+.material-symbols-rounded {font-family: 'Material Symbols Rounded' !important;font-optical-sizing: auto;font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;}
 .stApp { background-color: #05090f; color: #c9d1d9; }
 section[data-testid="stSidebar"] { background-color: #090e18; border-right: 1px solid #1e2a3a; }
 section[data-testid="stSidebar"] * { font-family: 'IBM Plex Mono', monospace !important; font-size: 11px; }
-div[data-testid="metric-container"] {
-  background: linear-gradient(140deg,#090e18 0%,#0d1525 100%);
-  border: 1px solid #1e2a3a; border-top: 2px solid #1f6feb; border-radius: 2px; padding: 16px 18px;
-}
-div[data-testid="metric-container"] label {
-  color: #58a6ff !important; font-family: 'IBM Plex Mono',monospace !important;
-  font-size: 8px !important; text-transform: uppercase; letter-spacing: .2em; font-weight: 700;
-}
-div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
-  color: #e6edf3 !important; font-family: 'IBM Plex Mono',monospace !important;
-  font-size: 18px !important; font-weight: 700;
-}
-div[data-testid="metric-container"] div[data-testid="stMetricDelta"] {
-  font-family: 'IBM Plex Mono',monospace !important; font-size: 9px !important;
-}
+div[data-testid="metric-container"] {background: linear-gradient(140deg,#090e18 0%,#0d1525 100%);border: 1px solid #1e2a3a; border-top: 2px solid #1f6feb; border-radius: 2px; padding: 16px 18px;}
+div[data-testid="metric-container"] label {color: #58a6ff !important; font-family: 'IBM Plex Mono',monospace !important;font-size: 8px !important; text-transform: uppercase; letter-spacing: .2em; font-weight: 700;}
+div[data-testid="metric-container"] div[data-testid="stMetricValue"] {color: #e6edf3 !important; font-family: 'IBM Plex Mono',monospace !important;font-size: 18px !important; font-weight: 700;}
+div[data-testid="metric-container"] div[data-testid="stMetricDelta"] {font-family: 'IBM Plex Mono',monospace !important; font-size: 9px !important;}
 /* v3-3: dirty run button pulses */
-.run-btn-dirty > button {
-  background: linear-gradient(135deg,#1f6feb,#388bfd) !important;
-  color: #fff !important; border: none !important;
-  box-shadow: 0 0 0 2px #388bfd, 0 0 22px rgba(56,139,253,.55) !important;
-  animation: pulse-btn 1.4s infinite;
-}
-@keyframes pulse-btn {
-  0%  { box-shadow: 0 0 0 2px #388bfd, 0 0 12px rgba(56,139,253,.35); }
-  50% { box-shadow: 0 0 0 2px #58a6ff, 0 0 28px rgba(88,166,255,.65); }
-  100%{ box-shadow: 0 0 0 2px #388bfd, 0 0 12px rgba(56,139,253,.35); }
-}
-.run-btn-clean > button {
-  background: #0d1525 !important; color: #6e7681 !important;
-  border: 1px solid #1e2a3a !important; box-shadow: none !important;
-}
-.stButton > button {
-  border-radius: 2px; font-family: 'IBM Plex Mono',monospace; font-size: 11px;
-  font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
-  padding: 11px 20px; transition: background .2s, box-shadow .2s; width: 100%;
-}
+.run-btn-dirty > button {background: linear-gradient(135deg,#1f6feb,#388bfd) !important;color: #fff !important; border: none !important;box-shadow: 0 0 0 2px #388bfd, 0 0 22px rgba(56,139,253,.55) !important;animation: pulse-btn 1.4s infinite;}
+@keyframes pulse-btn {0%  { box-shadow: 0 0 0 2px #388bfd, 0 0 12px rgba(56,139,253,.35); }50% { box-shadow: 0 0 0 2px #58a6ff, 0 0 28px rgba(88,166,255,.65); }100%{ box-shadow: 0 0 0 2px #388bfd, 0 0 12px rgba(56,139,253,.35); }}
+.run-btn-clean > button {background: #0d1525 !important; color: #6e7681 !important;border: 1px solid #1e2a3a !important; box-shadow: none !important;}
+.stButton > button {border-radius: 2px; font-family: 'IBM Plex Mono',monospace; font-size: 11px;font-weight: 700; letter-spacing: .1em; text-transform: uppercase;padding: 11px 20px; transition: background .2s, box-shadow .2s; width: 100%;}
 .stTabs [data-baseweb="tab-list"] { background: #090e18; border-bottom: 1px solid #1e2a3a; gap: 0; }
-.stTabs [data-baseweb="tab"] {
-  font-family: 'IBM Plex Mono',monospace !important; font-size: 10px !important;
-  font-weight: 700 !important; letter-spacing: .12em !important; text-transform: uppercase !important;
-  color: #6e7681 !important; background: transparent !important;
-  border-radius: 0 !important; border-bottom: 2px solid transparent !important; padding: 10px 18px !important;
-}
+.stTabs [data-baseweb="tab"] {font-family: 'IBM Plex Mono',monospace !important; font-size: 10px !important;font-weight: 700 !important; letter-spacing: .12em !important; text-transform: uppercase !important;color: #6e7681 !important; background: transparent !important;border-radius: 0 !important; border-bottom: 2px solid transparent !important; padding: 10px 18px !important;}
 .stTabs [aria-selected="true"] { color: #58a6ff !important; border-bottom: 2px solid #1f6feb !important; }
-.stSelectbox > div > div {
-  background: #090e18; border: 1px solid #1e2a3a; border-radius: 2px;
-  font-family: 'IBM Plex Mono',monospace; font-size: 11px; color: #c9d1d9;
-}
+.stSelectbox > div > div {background: #090e18; border: 1px solid #1e2a3a; border-radius: 2px;font-family: 'IBM Plex Mono',monospace; font-size: 11px; color: #c9d1d9;}
 .stSlider [data-baseweb="slider"] { color: #388bfd; }
 .stRadio label { font-family: 'IBM Plex Mono',monospace !important; font-size: 10px !important; color: #adbac7 !important; }
-.streamlit-expanderHeader {
-  background: #090e18 !important; border: 1px solid #1e2a3a !important;
-  border-radius: 2px !important; font-family: 'IBM Plex Mono',monospace !important;
-  font-size: 10px !important; color: #adbac7 !important; text-transform: uppercase; letter-spacing: .1em;
-}
+.streamlit-expanderHeader {background: #090e18 !important; border: 1px solid #1e2a3a !important;border-radius: 2px !important; font-family: 'IBM Plex Mono',monospace !important;font-size: 10px !important; color: #adbac7 !important; text-transform: uppercase; letter-spacing: .1em;}
 .stDataFrame { border: 1px solid #1e2a3a; }
 hr { border-color: #1e2a3a !important; }
 ::-webkit-scrollbar { width: 4px; }
