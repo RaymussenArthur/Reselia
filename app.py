@@ -1,5 +1,5 @@
 """
-RESELIA v2.0 — v3 PATCH
+RESELIA v2.0 — v3 PATCH + B2G Features Merged
 Fixes applied:
   [v3-1] BMKG: proper adm4 param, graceful fallback (no false "error" banner)
   [v3-2] Font contrast: all dim text boosted for readability
@@ -9,9 +9,13 @@ Fixes applied:
   [v3-6] Map zoom: auto-computed from dist value per area
   [v3-7] Red nodes: threshold raised to 0.65 — only truly high-risk nodes are red
   [v3-8] POI fallback: added entries for all 10 areas
+B2G Features merged:
+  [b2g-1] Offline Mode toggle — simulates API blackout, forces high stressor weight
+  [b2g-2] Azure Hybrid Sync — silent no-op unless AZURE_STORAGE_CONNECTION_STRING is set
+  [b2g-3] Autonomous LLM Policy Agent — SPK auto-draft tab using Claude API
 """
 from __future__ import annotations
-import math, os, pickle, warnings, requests
+import math, os, pickle, warnings, requests, json
 import numpy as np, pandas as pd, polars as pl
 import networkx as nx, geopandas as gpd
 import matplotlib.pyplot as plt
@@ -78,7 +82,7 @@ components.html("""
 """, height=0, scrolling=False)
 
 # Session state init
-for k, v in [("last_params", {}), ("results", None), ("dirty", False)]:
+for k, v in [("last_params", {}), ("results", None), ("dirty", False), ("_collapse_sidebar", False)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -119,16 +123,19 @@ section[data-testid="stSidebar"][aria-expanded="true"] ~ * [data-testid="collaps
 button[kind="header"] span[data-testid="stIconMaterial"] {font-size: 0 !important;}
 .stCaption { font-family: 'IBM Plex Mono',monospace !important; font-size: 9px !important; color: #6e7681 !important; }
 .stAlert { border-radius: 2px; }
+/* b2g-1: offline mode toggle styling */
+.offline-badge {display:inline-block;background:#2d0000;border:1px solid #660000;border-left:3px solid #ff4444;
+  padding:6px 12px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#ff4444;letter-spacing:.1em;margin-bottom:12px;}
 </style>""", unsafe_allow_html=True)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 FLOOD_THRESHOLD_M   = 2.5
-DBSCAN_EPS_M        = 350   
-DBSCAN_MIN_PTS      = 5 
+DBSCAN_EPS_M        = 350
+DBSCAN_MIN_PTS      = 5
 CRITICAL_RADIUS_M   = 300.0
 EARTH_R             = 6_371_000.0
 MODEL_PICKLE_PATH   = "Notebooks/Phase_2/resilia_gat_model.pkl"
-HIGH_RISK_THRESHOLD = 0.65  # v3-7: only nodes with prob >= 0.65 are "High"
+HIGH_RISK_THRESHOLD = 0.65
 
 AREA_CONFIGS: dict[str, dict] = {
     "Kemayoran":         {"center":(-6.1625,106.8572),"dist":4000,"adm4":"31.71.03.1001",
@@ -234,7 +241,7 @@ def _zoom_from_dist(d: int) -> int:
     return 15 if d<=1500 else 14 if d<=2500 else 13 if d<=4000 else 12
 
 def _risk_color(s: float, stressor_w: float, elev: float = 0.) -> str:
-    if elev > FLOOD_THRESHOLD_M * 2.0:   
+    if elev > FLOOD_THRESHOLD_M * 2.0:
         s = min(s, 0.40)
     adjusted = s * (0.75 + stressor_w * 0.25)
     return "#388bfd" if adjusted < 0.35 else "#d29922" if adjusted < 0.55 else "#f85149"
@@ -318,9 +325,45 @@ def inject_poi_criticality(G, poi_df: pd.DataFrame):
         G.nodes[node]["poi_criticality"]=round(max(0.,1.-min(_hav(nlat,nlon,p[0],p[1]) for p in poi_list)/CRITICAL_RADIUS_M),4)
     return G
 
+def _approx_closeness(Gu, k: int = 500, seed: int = 42) -> dict:
+    rng    = np.random.default_rng(seed)
+    nodes  = list(Gu.nodes())
+    pivots = set(rng.choice(nodes, size=min(k, len(nodes)), replace=False).tolist())
+    cc: dict = {}
+    for v in nodes:
+        lengths = nx.single_source_shortest_path_length(Gu, v)
+        dists   = [l for t, l in lengths.items() if t in pivots and l > 0]
+        if not dists:
+            cc[v] = 0.0
+        else:
+            cc[v] = (len(dists) / len(pivots)) / (sum(dists) / len(dists))
+    max_val = max(cc.values()) or 1.0
+    return {v: s / max_val for v, s in cc.items()}
+
 def compute_graph_features(G):
-    dc=nx.degree_centrality(G); bc=nx.betweenness_centrality(G,k=200,normalized=True,seed=42)
-    cc=nx.closeness_centrality(G); clc=nx.clustering(nx.Graph(G.to_undirected())); pr=nx.pagerank(G,alpha=.85,max_iter=200)
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Pre-build undirected copy once — reused by both clustering and closeness
+    Gu = nx.Graph(G.to_undirected())
+
+    # Degree is O(V), no sampling needed — run immediately on main thread
+    dc = nx.degree_centrality(G)
+
+    def _bc(): return nx.betweenness_centrality(G, k=50, normalized=True, seed=42)
+    def _cc(): return _approx_closeness(Gu, k=500, seed=42)
+    def _pr(): return nx.pagerank(G, alpha=.85, max_iter=100, tol=1e-4)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_bc = pool.submit(_bc)
+        f_cc = pool.submit(_cc)
+        f_pr = pool.submit(_pr)
+        bc = f_bc.result()
+        cc = f_cc.result()
+        pr = f_pr.result()
+
+    # clustering runs on the already-built Gu — no second graph conversion
+    clc = nx.clustering(Gu)
+
     for n in G.nodes():
         G.nodes[n].update({"degree_centrality":float(dc[n]),"betweenness_centrality":float(bc[n]),
                            "closeness_centrality":float(cc[n]),"clustering_coefficient":float(clc[n]),"pagerank":float(pr[n])})
@@ -438,9 +481,14 @@ def run_dbscan(G, eps_m=DBSCAN_EPS_M, min_pts=DBSCAN_MIN_PTS):
     for i,nid in enumerate(nids): G.nodes[nid]["epicenter_cluster"]=labels[i]
     return {"epicenter_df":edf,"n_epicenters":len(clusters),"n_noise":n_noise,"labels":labels,"node_ids":nids,"coords":cd}
 
-# v3-1: BMKG with adm4, graceful multi-level fallback
+# ── [v3-1] BMKG with adm4, graceful multi-level fallback ──────────────────────
+# ── [b2g-1] Extended with offline_mode parameter ──────────────────────────────
 @st.cache_data(show_spinner=False, ttl=900)
-def fetch_bmkg(adm4: str) -> tuple[str, float, bool, str]:
+def fetch_bmkg(adm4: str, offline_mode: bool = False) -> tuple[str, float, bool, str]:
+    # b2g-1: when offline mode is toggled, skip the API entirely and use a
+    # high stressor weight to simulate disaster-condition API blackout
+    if offline_mode:
+        return "Hujan Lebat (Edge Cache)", WEATHER_WEIGHTS["Hujan Lebat"], False, "offline_forced"
     try:
         resp = requests.get(f"https://api.bmkg.go.id/publik/prakiraan-cuaca?adm4={adm4}", timeout=10)
         resp.raise_for_status()
@@ -458,6 +506,32 @@ def fetch_bmkg(adm4: str) -> tuple[str, float, bool, str]:
         return "Berawan", WEATHER_WEIGHTS["Berawan"], False, f"http_{e.response.status_code if e.response else '?'}"
     except Exception:
         return "Berawan", WEATHER_WEIGHTS["Berawan"], False, "offline"
+
+# ── [b2g-2] Azure Hybrid Sync ────────────────────────────────────────────────
+def _try_azure_sync(area: str, weather: str, risk_sfp: float, n_epicenters: int) -> str:
+    """
+    Silently attempts to sync a summary payload to Azure Blob Storage.
+    Only runs if AZURE_STORAGE_CONNECTION_STRING is set in environment.
+    Returns a status string for optional display; never raises.
+    """
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn_str:
+        return "no_env"   # env var not set — skip entirely, no error
+    try:
+        from azure.storage.blob import BlobServiceClient
+        blob_service_client = BlobServiceClient.from_connection_string(conn_str)
+        container_client = blob_service_client.get_container_client("resilia-b2g-backup")
+        payload = {
+            "area": area, "weather": weather,
+            "sfp": risk_sfp, "n_epicenters": n_epicenters,
+        }
+        blob_client = container_client.get_blob_client(
+            blob=f"spk_{area.lower().replace(' ','_')}.json"
+        )
+        blob_client.upload_blob(json.dumps(payload), overwrite=True)
+        return "synced"
+    except Exception:
+        return "failed"   # absolute silent fallback — edge compute keeps running
 
 def compute_risk_v2(G, sw, res):
     vuln=[n for n,d in G.nodes(data=True) if d.get("vulnerability")=="High"]
@@ -481,7 +555,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         subdomains="abcd"
     ).add_to(m)
 
-    # ── Edges (base layer, always visible) ────────────────────────────────────
     edge_list = list(edges.iterrows())
     if len(edge_list) > 3000:
         rng_e = random.Random(42)
@@ -490,7 +563,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         folium.PolyLine([(lat, lon) for lon, lat in row.geometry.coords],
                         color="#1f6feb", weight=0.9, opacity=.25).add_to(m)
 
-    # ── Risk Nodes FeatureGroup ────────────────────────────────────────────────
     node_fg = folium.FeatureGroup(name="Risk Nodes", show=True)
     rng_n = random.Random(42)
     for node, d in G.nodes(data=True):
@@ -506,7 +578,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         ).add_to(node_fg)
     node_fg.add_to(m)
 
-    # ── Heatmap FeatureGroup ───────────────────────────────────────
     if show_heatmap and vuln:
         heat_fg = folium.FeatureGroup(name="Heatmap", show=True)
         HeatMap(
@@ -516,7 +587,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         ).add_to(heat_fg)
         heat_fg.add_to(m)
 
-    # ── POI FeatureGroup + MarkerCluster ──────────────────────────────────────
     poi_fg = folium.FeatureGroup(name="POI", show=True)
     poi_cluster = MarkerCluster(
         options={"maxClusterRadius": 60, "spiderfyOnMaxZoom": True, "showCoverageOnHover": False}
@@ -532,7 +602,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         ).add_to(poi_cluster)
     poi_fg.add_to(m)
 
-    # ── Epicenters FeatureGroup ────────────────────────────────────────────────
     epi_fg = folium.FeatureGroup(name="Epicenters", show=True)
     edf = epi_data.get("epicenter_df", pd.DataFrame())
     if not edf.empty:
@@ -547,10 +616,8 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
             ).add_to(epi_fg)
     epi_fg.add_to(m)
 
-    # ── LayerControl ──────────────────────
     folium.LayerControl(position="topright", collapsed=False).add_to(m)
 
-    # ── Legend overlay ────────────────────────────────────────────────────────
     m.get_root().html.add_child(folium.Element(
         f'<div style="position:fixed;bottom:24px;left:24px;z-index:1000;background:#090e18ee;padding:14px 18px;'
         f'border:1px solid #1e2a3a;border-top:2px solid {tc};font-family:\'IBM Plex Mono\',monospace;'
@@ -564,8 +631,7 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         f'&#9679;<span style="color:#f85149;"> Red</span> &gt;0.55 &nbsp;'
         f'<span style="color:#484f58;">(low-risk nodes hidden)</span></div></div>'
     ))
-    
-    # ── Layer control theme ───────────────────────────────────────────────
+
     m.get_root().html.add_child(folium.Element("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap');
@@ -576,12 +642,10 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
     .leaflet-control-layers-overlays label span {color: #c9d1d9 !important;}
     .leaflet-control-layers-separator {border-top: 1px solid #1e2a3a !important;margin: 6px 0 !important;}
     .leaflet-control-layers-base {margin-bottom: 4px !important;}
-    /* Style radio & checkboxes */
     .leaflet-control-layers input[type="radio"],
     .leaflet-control-layers input[type="checkbox"] {accent-color: #1f6feb !important;width: 12px !important;height: 12px !important;}
-    /* Header label for base layers */
     .leaflet-control-layers-base > label:first-child span {color: #58a6ff !important;}</style>"""))
-    
+
     return m._repr_html_()
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -615,6 +679,17 @@ with st.sidebar:
         _lbl("Map Render")
         view_mode    = st.radio("View", ["Interactive","Static"], label_visibility="collapsed")
         show_heatmap = st.checkbox("Show risk heatmap", value=False)
+
+        # ── [b2g-1] Edge-Compute Offline Mode ─────────────────────────────────
+        st.markdown("<hr style='border-color:#1e2a3a;margin:12px 0;'>", unsafe_allow_html=True)
+        _lbl("Edge-Compute Control", "0")
+        offline_mode = st.toggle(
+            "Offline Mode",
+            value=False,
+            help="Simulate API Blackout - Bypasses BMKG API and forces Hujan Lebat stressor (0.85). "
+                 "Simulates zero-dependency operation during disaster-condition internet outage."
+        )
+
         st.markdown("<hr style='border-color:#1e2a3a;margin:12px 0;'>", unsafe_allow_html=True)
         _lbl("Advanced Parameters", "0")
         flood_threshold = st.slider("Flood Threshold (m)",  1.0, 5.0,  float(FLOOD_THRESHOLD_M), .1)
@@ -623,7 +698,8 @@ with st.sidebar:
         cascade_rounds  = st.slider("Cascade Rounds",          3,  10,  5,                         1)
 
         current_params = {"area":selected_area,"view":view_mode,"heatmap":show_heatmap,
-                          "thr":flood_threshold,"eps":dbscan_eps,"min_pts":dbscan_min,"rounds":cascade_rounds}
+                          "offline":offline_mode,"thr":flood_threshold,"eps":dbscan_eps,
+                          "min_pts":dbscan_min,"rounds":cascade_rounds}
         is_dirty = st.session_state.results is None or current_params != st.session_state.last_params
 
         st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
@@ -637,7 +713,8 @@ with st.sidebar:
       <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#6e7681;line-height:2.2;text-transform:uppercase;letter-spacing:.1em;">
         Phase 2 Stack<br>── GAT message passing<br>── GradientBoosting clf<br>── Polars data lake<br>
         ── OSM POI Overpass<br>── NetworkX cascade<br>── DBSCAN epicenters<br>── BMKG weather API<br>
-        ── Pickle persistence<br>──────────────────<br>OSM / ODbL &#183; BMKG Public</div></div>""",
+        ── Pickle persistence<br>── Azure Blob Storage<br>── LLM Policy Agent<br>──────────────────<br>
+        OSM / ODbL &#183; BMKG Public</div></div>""",
                 unsafe_allow_html=True)
 
 # ── Auto-collapse sidebar after run ───────────────────────────────────────────
@@ -670,7 +747,7 @@ st.markdown("""<div style="padding:0 0 24px 0;">
     <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#6e7681;background:#090e18;border:1px solid #1e2a3a;padding:2px 8px;letter-spacing:.12em;">v2.0</span>
   </div>
   <div style="font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:#6e7681;max-width:700px;line-height:1.7;">
-    GAT-augmented flood vulnerability &middot; cascading failure simulation &middot; DBSCAN triage &middot; BMKG weather &middot; pickle persistence.
+    GAT-augmented flood vulnerability &middot; cascading failure simulation &middot; DBSCAN triage &middot; BMKG weather &middot; pickle persistence &middot; LLM policy agent.
   </div>
   <div style="height:1px;background:linear-gradient(90deg,#1f6feb 0%,#388bfd 30%,#1e2a3a 70%,transparent 100%);margin-top:20px;"></div>
 </div>""", unsafe_allow_html=True)
@@ -700,15 +777,24 @@ if run_btn:
             st.write("**[7/8]** DBSCAN epicenters...")
             epi_res = run_dbscan(G, eps_m=dbscan_eps, min_pts=dbscan_min)
             st.write(f"  → {epi_res['n_epicenters']} epicenters · {epi_res['n_noise']} noise")
+            # b2g-1: pass offline_mode flag to fetch_bmkg
             st.write("**[8/8]** BMKG weather + SFP...")
-            weather, stressor_w, live, fbr = fetch_bmkg(AREA_CONFIGS[selected_area]["adm4"])
+            weather, stressor_w, live, fbr = fetch_bmkg(AREA_CONFIGS[selected_area]["adm4"], offline_mode)
             risk_res = compute_risk_v2(G, stressor_w, cascade_res["resilience_score"])
-            st.write(f"  → SFP={risk_res['sfp']:.2f}% · Tier={risk_res['tier']} · Weather={weather}")
+            st.write(f"  → SFP={risk_res['sfp']:.2f}% · Tier={risk_res['tier']} · Weather={weather}"
+                     + (" [OFFLINE MODE]" if offline_mode else ""))
+
+            # b2g-2: Azure sync — silent, no-op when env var not set
+            azure_status = _try_azure_sync(
+                selected_area, weather, risk_res["sfp"], epi_res["n_epicenters"]
+            )
+
             st.session_state.results = {
                 "G":G,"nodes":nodes,"edges":edges,"feat_df":feat_df,"poi_df":poi_df,
                 "model":model_res,"cascade":cascade_res,"epi":epi_res,"risk":risk_res,
-                "weather":weather,"stressor_w":stressor_w,"live":live,"fbr":fbr,"area":selected_area,
-                "view_mode":view_mode,"show_heatmap":show_heatmap,
+                "weather":weather,"stressor_w":stressor_w,"live":live,"fbr":fbr,
+                "offline_mode":offline_mode,"azure_status":azure_status,
+                "area":selected_area,"view_mode":view_mode,"show_heatmap":show_heatmap,
                 "flood_threshold":flood_threshold,"dbscan_eps":dbscan_eps,
                 "dbscan_min":dbscan_min,"cascade_rounds":cascade_rounds,
             }
@@ -724,11 +810,18 @@ if st.session_state.results:
     view_mode=r.get("view_mode","Interactive"); show_heatmap=r.get("show_heatmap",False)
     flood_threshold=r.get("flood_threshold",FLOOD_THRESHOLD_M)
     dbscan_eps=r.get("dbscan_eps",DBSCAN_EPS_M); dbscan_min=r.get("dbscan_min",DBSCAN_MIN_PTS)
-    cascade_rounds=r.get("cascade_rounds",5)
+    cascade_rounds=r.get("cascade_rounds",5); offline_mode=r.get("offline_mode",False)
     c=TIER_COLOR[risk["tier"]]; bg=TIER_BG[risk["tier"]]; bd=TIER_BORDER[risk["tier"]]
 
-    # v3-1: BMKG warning — only for real offline, not silent unmapped
-    if not r["live"]:
+    # b2g-1: Offline mode banner
+    if offline_mode:
+        st.markdown(
+            '<div class="offline-badge">🔌 EDGE-COMPUTE OFFLINE MODE ACTIVE — '
+            'BMKG API bypassed · Stressor forced to Hujan Lebat (0.85)</div>',
+            unsafe_allow_html=True
+        )
+    # v3-1: BMKG warning — only for real API failures, not silent unmapped or offline
+    elif not r["live"]:
         fbr=r.get("fbr","offline")
         msgs={"timeout":"BMKG API timed out — using Berawan fallback (stressor 0.15).",
               "offline":"BMKG API unreachable — using Berawan fallback.",
@@ -737,7 +830,11 @@ if st.session_state.results:
         msg=msgs.get(fbr, f"BMKG unavailable ({fbr}) — using Berawan fallback.")
         st.info(f"ℹ️ {msg}")
 
-    # v3-4: KPI Carousel (proper HTML in iframe)
+    # b2g-2: Azure sync status — only shown when synced (no noise when not configured)
+    if r.get("azure_status") == "synced":
+        st.success("Azure Blob Storage sync successful.")
+
+    # v3-4: KPI Carousel
     _lbl("Key Risk Indicators", "0")
     kpis=[
         ("Area",r["area"],None,""),
@@ -750,6 +847,8 @@ if st.session_state.results:
         ("Epicenters",str(epi["n_epicenters"]),None,""),
         ("SFP",f"{risk['sfp']:.2f}%",None,""),
         ("Tier",risk["tier"],None,c),
+        ("Net Status","OFFLINE" if offline_mode else "ONLINE",None,
+         "#ff4444" if offline_mode else "#3fb950"),
     ]
     ci=""
     for lbl,val,delta,vc in kpis:
@@ -775,19 +874,23 @@ if st.session_state.results:
 
     # Tier banner
     pen_pct=(risk["penalty"]-1.)*100
-    src_label="📦 notebook pkl" if mdl.get("model_src")=="notebook_pickle" else "🔧 trained fresh"
+    src_label="notebook pkl" if mdl.get("model_src")=="notebook_pickle" else "🔧 trained fresh"
+    offline_badge = ' &middot; <span style="color:#ff4444;">🔌 OFFLINE MODE</span>' if offline_mode else ""
     st.markdown(f"""<div style="margin:16px 0;background:{bg};border:1px solid {bd};border-left:4px solid {c};padding:14px 22px;font-family:'IBM Plex Mono',monospace;">
       <span style="font-size:8px;letter-spacing:.2em;text-transform:uppercase;color:{c};font-weight:700;">Risk Tier</span>
       <span style="font-size:20px;font-weight:700;color:{c};margin-left:18px;">{risk['tier']}</span>
       <span style="font-size:10px;color:#adbac7;margin-left:22px;">
         SFP {risk['sfp']:.2f}% &middot; {r['weather']} &middot; Stressor {r['stressor_w']:.2f}
-        &middot; Resilience Penalty +{pen_pct:.0f}% &middot; {len(risk['vulnerable']):,} nodes &middot; {src_label}
+        &middot; Resilience Penalty +{pen_pct:.0f}% &middot; {len(risk['vulnerable']):,} nodes &middot; {src_label}{offline_badge}
       </span></div>""", unsafe_allow_html=True)
 
-    tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs(["SPATIAL MAP","MODEL EVALUATION","CASCADING FAILURE",
-                                               "EPICENTER TRIAGE","POI IMPACT LAYER","FEATURE ANALYSIS"])
+    # ── Tabs ────────────────────────────────────────────────────────────────
+    tab1,tab2,tab3,tab4,tab5,tab6,tab7 = st.tabs([
+        "SPATIAL MAP","MODEL EVALUATION","CASCADING FAILURE",
+        "EPICENTER TRIAGE","POI IMPACT LAYER","FEATURE ANALYSIS","LLM POLICY AGENT"
+    ])
 
-    # TAB 1
+    # TAB 1 — Spatial Map 
     with tab1:
         if view_mode == "Interactive":
             if "map_html" not in r:
@@ -795,10 +898,9 @@ if st.session_state.results:
                     r["map_html"] = build_map(
                         r["G"], r["edges"], risk["vulnerable"], r["poi_df"], epi,
                         r["area"], r["weather"], risk["sfp"], risk["tier"],
-                        mdl["f1_w"], r["stressor_w"],
-                        show_heatmap
+                        mdl["f1_w"], r["stressor_w"], show_heatmap
                     )
-                    st.session_state.results = r  
+                    st.session_state.results = r
             components.html(r["map_html"], height=580, scrolling=False)
         else:
             with st.spinner("Rendering static map…"):
@@ -832,9 +934,9 @@ if st.session_state.results:
                 plt.tight_layout()
             st.pyplot(fig, width='stretch'); plt.close(fig)
 
-    # TAB 2
+    # TAB 2 — Model Evaluation 
     with tab2:
-        _lbl("Phase 2 GAT vs Phase 1 RF — Benchmark","0")
+        _lbl("Model Benchmark","0")
         e1,e2,e3,e4,e5=st.columns(5)
         e1.metric("Accuracy",f"{mdl['acc']:.4f}"); e2.metric("F1 Weighted",f"{mdl['f1_w']:.4f}")
         e3.metric("F1 Macro",f"{mdl['f1_mac']:.4f}"); e4.metric("AUC-ROC",f"{mdl['auc_roc']:.4f}")
@@ -892,10 +994,10 @@ if st.session_state.results:
                 "Support":int(cr.get(cls,{}).get("support",0))} for cls in ["Low Risk","High Risk"]]),
                 width='stretch')
 
-    # TAB 3
+    # TAB 3 — Cascading Failure 
     with tab3:
         sd=casc["sim_df"]
-        _lbl("Network Resilience (GAT-ordered removal)","0")
+        _lbl("Network Resilience","0")
         r1,r2,r3,r4=st.columns(4)
         r1.metric("Resilience Score",f"{casc['resilience_score']:.4f}")
         r2.metric("Efficiency Degradation",f"{casc['eff_degradation']*100:.1f}%")
@@ -920,9 +1022,9 @@ if st.session_state.results:
             fig.patch.set_facecolor("#05090f"); plt.tight_layout()
         st.pyplot(fig,width='stretch'); plt.close(fig)
         st.dataframe(sd.style.format({"global_efficiency":"{:.4f}","lcc_fraction":"{:.4f}",
-                                       "avg_clustering":"{:.4f}","pct_removed":"{:.1f}%"}),width='stretch'  )
+                                       "avg_clustering":"{:.4f}","pct_removed":"{:.1f}%"}),width='stretch')
 
-    # TAB 4
+    # TAB 4 — Epicenter Triage 
     with tab4:
         edf=epi["epicenter_df"]
         ep1,ep2,ep3=st.columns(3)
@@ -964,7 +1066,7 @@ if st.session_state.results:
                 fig2.patch.set_facecolor("#05090f"); plt.tight_layout()
             st.pyplot(fig2,width='stretch'); plt.close(fig2)
 
-    # TAB 5
+    # TAB 5 — POI Impact Layer
     with tab5:
         pdf=r["poi_df"]; _lbl("Critical Infrastructure Inventory","0"); st.dataframe(pdf,width='stretch')
         ac=pdf["amenity"].value_counts()
@@ -988,9 +1090,9 @@ if st.session_state.results:
             fig3.patch.set_facecolor("#05090f"); plt.tight_layout()
         st.pyplot(fig3,width='stretch'); plt.close(fig3)
 
-    # TAB 6
+    # TAB 6 — Feature Analysis
     with tab6:
-        _lbl("Phase 2 Feature Matrix — All 7 Features","0")
+        _lbl("Feature Matrix","0")
         fds=r["feat_df"].copy()
         st.dataframe(fds[FEAT_COLS_V2+["flood_label"]].describe().round(4),width='stretch')
         with st.spinner("Rendering feature distribution charts…"):
@@ -1021,12 +1123,154 @@ if st.session_state.results:
             fig4.patch.set_facecolor("#05090f"); plt.tight_layout()
         st.pyplot(fig4, width='stretch'); plt.close(fig4)
 
-    # Policy
+    # ── TAB 7 — [b2g-3] LLM Policy Agent ──────────────────────────────────────
+    with tab7:
+        _lbl("Autonomous LLM Policy Agent — SPK Auto-Draft", "0")
+        st.markdown(
+            '<div style="font-family:\'IBM Plex Mono\',monospace;font-size:9px;color:#6e7681;margin-bottom:16px;">'
+            'Uses the Claude API to generate a Surat Perintah Kerja (SPK) grounded in live analysis data. '
+            'Prompt is assembled from GAT inference, DBSCAN epicenters, weather stressor, and tier.'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        n_epi_t7   = epi["n_epicenters"]
+        top_ep_t7  = ""
+        top_coord  = ""
+        if n_epi_t7 > 0 and not epi["epicenter_df"].empty:
+            te = epi["epicenter_df"].iloc[0]
+            top_ep_t7 = f"EP-{int(te['cluster_id'])+1} (triage {te['triage_score']:.4f}, {te['n_nodes']} nodes)"
+            top_coord = f"({te['centroid_lat']:.6f}, {te['centroid_lon']:.6f})"
+
+        # Show the data context that will be sent to the LLM
+        with st.expander("📋 Context sent to LLM (read-only)", expanded=False):
+            st.code(
+                f"Area: {r['area']}\n"
+                f"Risk Tier: {risk['tier']}\n"
+                f"SFP: {risk['sfp']:.2f}%\n"
+                f"Weather: {r['weather']} (stressor {r['stressor_w']:.2f})\n"
+                f"High-Risk Nodes: {len(risk['vulnerable']):,} / {risk['n_total']:,}\n"
+                f"GAT F1: {mdl['f1_w']:.4f}  AUC: {mdl['auc_roc']:.4f}\n"
+                f"Resilience Score: {casc['resilience_score']:.4f}\n"
+                f"DBSCAN Epicenters: {n_epi_t7}\n"
+                f"Top Epicenter: {top_ep_t7 or 'none'} {top_coord}\n"
+                f"Offline Mode: {offline_mode}\n"
+                f"Model Source: {mdl.get('model_src','?')}",
+                language="yaml"
+            )
+
+        col_lang, col_generate = st.columns([2, 1])
+        with col_lang:
+            doc_lang = st.radio(
+                "Bahasa dokumen",
+                ["Bahasa Indonesia", "English"],
+                horizontal=True,
+                label_visibility="visible"
+            )
+        with col_generate:
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            generate_btn = st.button("🤖  Generate SPK Draft", type="primary", use_container_width=True)
+
+        if generate_btn:
+            # Build a grounded prompt from live analysis data
+            if doc_lang == "Bahasa Indonesia":
+                lang_instruction = "Tulis seluruh dokumen dalam Bahasa Indonesia formal."
+                doc_title = "SURAT PERINTAH KERJA (TINDAKAN DARURAT)"
+            else:
+                lang_instruction = "Write the entire document in formal English."
+                doc_title = "EMERGENCY WORK ORDER (DISASTER RESPONSE)"
+
+            epi_detail = (
+                f"{n_epi_t7} DBSCAN cluster(s) identified; highest-priority: {top_ep_t7} at {top_coord}."
+                if n_epi_t7 > 0 else "No DBSCAN clusters isolated (adjust ε-radius if needed)."
+            )
+
+            spk_prompt = f"""You are an urban disaster-response policy writer for the Jakarta regional government (BPBD DKI Jakarta).
+{lang_instruction}
+
+Generate a formal Emergency Work Order (SPK) document based strictly on the following GAT + DBSCAN analysis outputs.
+Do NOT invent numbers — use only the figures provided below.
+
+--- ANALYSIS DATA ---
+Area              : {r['area']}, DKI Jakarta
+Risk Tier         : {risk['tier']}
+Scenario Flood %  : {risk['sfp']:.2f}%
+Weather / Stressor: {r['weather']} (weight {r['stressor_w']:.2f})
+High-Risk Nodes   : {len(risk['vulnerable']):,} of {risk['n_total']:,} road-network nodes
+GAT Model F1      : {mdl['f1_w']:.4f}  |  AUC-ROC: {mdl['auc_roc']:.4f}
+Network Resilience: {casc['resilience_score']:.4f}  (efficiency drop {casc['eff_degradation']*100:.1f}%)
+Epicenters        : {epi_detail}
+Offline Mode      : {"YES — analysis ran without live BMKG feed" if offline_mode else "NO — live BMKG telemetry used"}
+--- END DATA ---
+
+The document must contain:
+1. Document header (nomor SPK, tanggal, instansi penerbit)
+2. Situational analysis paragraph (cite the exact numbers above)
+3. Numbered field execution instructions (at least 3 concrete actions tied to the epicenter locations)
+4. Legal basis (cite UU No. 24 Tahun 2007 tentang Penanggulangan Bencana)
+5. Sign-off block (Kepala BPBD DKI Jakarta, placeholder name)
+
+Keep the tone official and concise. Do not add disclaimers about AI authorship inside the document."""
+
+            with st.spinner("Generating SPK draft via Claude API…"):
+                try:
+                    resp = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={"Content-Type": "application/json"},
+                        json={
+                            "model": "claude-sonnet-4-20250514",
+                            "max_tokens": 1000,
+                            "messages": [{"role": "user", "content": spk_prompt}],
+                        },
+                        timeout=60,
+                    )
+                    resp.raise_for_status()
+                    content_blocks = resp.json().get("content", [])
+                    spk_text = "\n".join(
+                        block["text"] for block in content_blocks if block.get("type") == "text"
+                    ).strip()
+
+                    if spk_text:
+                        st.session_state["spk_draft"] = spk_text
+                        st.session_state["spk_lang"]  = doc_lang
+                    else:
+                        st.warning("API returned an empty response — check model availability.")
+                except requests.exceptions.Timeout:
+                    st.error("Claude API timed out (>60s). Try again or check your network.")
+                except requests.exceptions.HTTPError as he:
+                    st.error(f"Claude API HTTP error: {he.response.status_code if he.response else '?'}")
+                except Exception as ex:
+                    st.error(f"Failed to call Claude API: {ex}")
+
+        # Render the stored draft (persists across reruns until next generate)
+        if "spk_draft" in st.session_state and st.session_state["spk_draft"]:
+            st.markdown("<hr style='border-color:#1e2a3a;margin:18px 0;'>", unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:8px;color:#58a6ff;'
+                f'letter-spacing:.2em;text-transform:uppercase;font-weight:700;margin-bottom:12px;">'
+                f'📄 {doc_title} — AI-GENERATED DRAFT</div>',
+                unsafe_allow_html=True
+            )
+            st.markdown(
+                f'<div style="background:#090e18;border:1px solid #1e2a3a;border-left:3px solid #1f6feb;'
+                f'padding:20px 24px;font-family:\'IBM Plex Sans\',sans-serif;font-size:13px;'
+                f'color:#c9d1d9;line-height:1.8;white-space:pre-wrap;">'
+                f'{st.session_state["spk_draft"]}'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            st.caption(
+                "⚠️ AI-generated draft. Review and validate with domain experts before official use. "
+                "Figures are sourced directly from the RESELIA v2 analysis run above."
+            )
+
+    # ── Policy recommendation banner (unchanged from v3) ──────────────────────
     n_epi=epi["n_epicenters"]; top_label=""
     if n_epi>0 and not epi["epicenter_df"].empty:
         te=epi["epicenter_df"].iloc[0]
         top_label=f"Priority EP-{int(te['cluster_id'])+1} (triage {te['triage_score']:.4f}, {te['n_nodes']} nodes) at ({te['centroid_lat']}, {te['centroid_lon']})."
     src_note="Model from notebook pickle." if mdl.get("model_src")=="notebook_pickle" else "Model trained fresh."
+    offline_note = " <b>⚠ Analysis ran in offline mode — BMKG feed bypassed.</b>" if offline_mode else ""
     st.markdown(f"""<div style="margin-top:28px;background:{bg};border:1px solid {bd};border-left:4px solid {c};padding:20px 26px;">
       <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:{c};letter-spacing:.2em;text-transform:uppercase;font-weight:700;margin-bottom:12px;">Policy Recommendation / {risk['tier']}</div>
       <div style="font-family:'IBM Plex Sans',sans-serif;font-size:14px;color:#e6edf3;line-height:1.8;">
@@ -1034,13 +1278,13 @@ if st.session_state.results:
         Stressor <b>{r['stressor_w']:.2f}</b> ({r['weather']}) + resilience penalty <b>{(risk['penalty']-1.)*100:.0f}%</b>
         → SFP <b style="color:{c};">{risk['sfp']:.2f}%</b>.
         {f'Pre-position across <b>{n_epi} DBSCAN epicenters</b>. {top_label}' if n_epi>0 else ''}
-        Reroute logistics from low-elevation clusters.
+        Reroute logistics from low-elevation clusters.{offline_note}
       </div>
       <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#6e7681;margin-top:10px;">{src_note}</div>
     </div>""", unsafe_allow_html=True)
     st.markdown("""<div style="height:1px;background:linear-gradient(90deg,transparent,#1e2a3a 40%,#1f6feb 100%);margin-top:40px;"></div>
     <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#3d4a58;text-align:right;padding:12px 0;letter-spacing:.1em;">
-      RESELIA v2.0 / GAT+GBM · Polars · DBSCAN · NetworkX · OSM ODbL · BMKG</div>""",
+      RESELIA v2.0 / GAT+GBM · Polars · DBSCAN · NetworkX · OSM ODbL · BMKG · Claude API</div>""",
                 unsafe_allow_html=True)
 
 else:
@@ -1054,4 +1298,5 @@ else:
         <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#388bfd;background:#090e18;border:1px solid #1f6feb;padding:8px 16px;letter-spacing:.1em;">DBSCAN EPICENTER TRIAGE</div>
         <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#388bfd;background:#090e18;border:1px solid #1f6feb;padding:8px 16px;letter-spacing:.1em;">CASCADING FAILURE SIM</div>
         <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#388bfd;background:#090e18;border:1px solid #1f6feb;padding:8px 16px;letter-spacing:.1em;">PICKLE MODEL PERSISTENCE</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#388bfd;background:#090e18;border:1px solid #1f6feb;padding:8px 16px;letter-spacing:.1em;">LLM POLICY AGENT</div>
       </div></div>""", unsafe_allow_html=True)
