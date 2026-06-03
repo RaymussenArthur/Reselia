@@ -12,10 +12,11 @@ Fixes applied:
 B2G Features merged:
   [b2g-1] Offline Mode toggle — simulates API blackout, forces high stressor weight
   [b2g-2] Azure Hybrid Sync — silent no-op unless AZURE_STORAGE_CONNECTION_STRING is set
-  [b2g-3] Autonomous LLM Policy Agent — SPK auto-draft tab using Claude API
+  [b2g-3] Autonomous LLM Policy Agent — SPK auto-draft tab using OpenRouter + rule-based fallback
 """
 from __future__ import annotations
 import math, os, pickle, warnings, requests, json
+from datetime import date
 import numpy as np, pandas as pd, polars as pl
 import networkx as nx, geopandas as gpd
 import matplotlib.pyplot as plt
@@ -23,7 +24,6 @@ import matplotlib.patches as mpatches
 import folium
 from folium.plugins import HeatMap
 import streamlit as st
-import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 import osmnx as ox
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
@@ -35,11 +35,11 @@ from sklearn.metrics import (f1_score, accuracy_score, roc_auc_score,
 
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="RESELIA v2", page_icon="🛰️",
+st.set_page_config(page_title="RESELIA v2", page_icon="logo.png",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Sidebar collapse button text ──────────────────────────────────────────
-components.html("""
+st.html("""
 <script>
 (function() {
     function fixBtn() {
@@ -79,10 +79,11 @@ components.html("""
     } catch(e) {}
 })();
 </script>
-""", height=0, scrolling=False)
+""")
 
 # Session state init
-for k, v in [("last_params", {}), ("results", None), ("dirty", False), ("_collapse_sidebar", False)]:
+for k, v in [("last_params", {}), ("results", None), ("dirty", False),
+             ("_collapse_sidebar", False), ("spk_draft", None), ("spk_doc_title", "")]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -99,7 +100,6 @@ div[data-testid="metric-container"] {background: linear-gradient(140deg,#090e18 
 div[data-testid="metric-container"] label {color: #58a6ff !important; font-family: 'IBM Plex Mono',monospace !important;font-size: 8px !important; text-transform: uppercase; letter-spacing: .2em; font-weight: 700;}
 div[data-testid="metric-container"] div[data-testid="stMetricValue"] {color: #e6edf3 !important; font-family: 'IBM Plex Mono',monospace !important;font-size: 18px !important; font-weight: 700;}
 div[data-testid="metric-container"] div[data-testid="stMetricDelta"] {font-family: 'IBM Plex Mono',monospace !important; font-size: 9px !important;}
-/* v3-3: dirty run button pulses */
 .run-btn-dirty > button {background: linear-gradient(135deg,#1f6feb,#388bfd) !important;color: #fff !important; border: none !important;box-shadow: 0 0 0 2px #388bfd, 0 0 22px rgba(56,139,253,.55) !important;animation: pulse-btn 1.4s infinite;}
 @keyframes pulse-btn {0%  { box-shadow: 0 0 0 2px #388bfd, 0 0 12px rgba(56,139,253,.35); }50% { box-shadow: 0 0 0 2px #58a6ff, 0 0 28px rgba(88,166,255,.65); }100%{ box-shadow: 0 0 0 2px #388bfd, 0 0 12px rgba(56,139,253,.35); }}
 .run-btn-clean > button {background: #0d1525 !important; color: #6e7681 !important;border: 1px solid #1e2a3a !important; box-shadow: none !important;}
@@ -116,16 +116,48 @@ hr { border-color: #1e2a3a !important; }
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: #05090f; }
 ::-webkit-scrollbar-thumb { background: #1e2a3a; }
-[data-testid="collapsedControl"] {display: flex !important;align-items: center !important;justify-content: center !important;}
-[data-testid="collapsedControl"] span {font-size: 0 !important;line-height: 0 !important;}
-[data-testid="collapsedControl"]::after {content: "▶" !important;font-size: 12px !important;font-family: monospace !important;color: #58a6ff !important;}
-section[data-testid="stSidebar"][aria-expanded="true"] ~ * [data-testid="collapsedControl"]::after {content: "◀" !important;}
-button[kind="header"] span[data-testid="stIconMaterial"] {font-size: 0 !important;}
 .stCaption { font-family: 'IBM Plex Mono',monospace !important; font-size: 9px !important; color: #6e7681 !important; }
 .stAlert { border-radius: 2px; }
-/* b2g-1: offline mode toggle styling */
-.offline-badge {display:inline-block;background:#2d0000;border:1px solid #660000;border-left:3px solid #ff4444;
-  padding:6px 12px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#ff4444;letter-spacing:.1em;margin-bottom:12px;}
+.offline-badge {display:inline-block;background:#2d0000;border:1px solid #660000;border-left:3px solid #ff4444; padding:6px 12px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#ff4444;letter-spacing:.1em;margin-bottom:12px;}
+
+button[data-testid="collapsedControl"] *,
+section[data-testid="stSidebar"] button[kind="header"] * {
+    display: none !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    font-size: 0 !important;
+}
+
+button[data-testid="collapsedControl"],
+section[data-testid="stSidebar"] button[kind="header"] {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-size: 0 !important; /* Mematikan sisa text bocor */
+    width: 40px !important;
+    height: 40px !important;
+    padding: 0 !important;
+}
+
+button[data-testid="collapsedControl"]::after,
+section[data-testid="stSidebar"] button[kind="header"]::after {
+    content: "☰" !important;
+    font-size: 24px !important;
+    color: #58a6ff !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-weight: bold !important;
+    line-height: 1 !important;
+    display: block !important;
+    visibility: visible !important;
+}
+
+button[data-testid="collapsedControl"]:hover::after,
+section[data-testid="stSidebar"] button[kind="header"]:hover::after {
+    color: #388bfd !important;
+}
 </style>""", unsafe_allow_html=True)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -237,6 +269,153 @@ FEAT_COLS_V2 = ["elevation","degree_centrality","betweenness_centrality",
                 "closeness_centrality","poi_criticality","clustering_coefficient","pagerank"]
 FEAT_COLS_V1 = ["degree_centrality","betweenness_centrality","closeness_centrality","elevation"]
 
+# ── OpenRouter LLM + fallback ──────────────────────────────────────────────────
+OPENROUTER_MODELS = [
+    "mistralai/mistral-7b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "qwen/qwen-2-7b-instruct:free",
+    "nousresearch/nous-hermes-2-mixtral-8x7b-dpo:free",
+]
+
+def _call_openrouter(prompt: str) -> str | None:
+    try:
+        key = st.secrets.get("OPENROUTER_API_KEY", "")
+    except Exception:
+        key = ""
+    if not key:
+        key = os.getenv("OPENROUTER_API_KEY", "")
+    if not key:
+        return None
+    for model in OPENROUTER_MODELS:
+        try:
+            resp = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://reselia.app",
+                    "X-Title": "RESELIA v2",
+                },
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 1200,
+                },
+                timeout=60,
+            )
+            raw = resp.json()
+            if "error" in raw:
+                continue
+            text = raw["choices"][0]["message"]["content"].strip()
+            if text:
+                return text
+        except Exception:
+            continue
+    return None
+
+def _generate_fallback_spk(r, risk, mdl, casc, epi, offline_mode, doc_lang) -> str:
+    today = date.today().strftime("%d %B %Y")
+    n_vuln   = len(risk["vulnerable"])
+    n_total  = risk["n_total"]
+    tier     = risk["tier"]
+    sfp      = risk["sfp"]
+    weather  = r["weather"]
+    stressor = r["stressor_w"]
+    area     = r["area"]
+    res      = casc["resilience_score"]
+    pen_pct  = (risk["penalty"] - 1.) * 100
+    f1       = mdl["f1_w"]
+    auc      = mdl["auc_roc"]
+    n_epi    = epi["n_epicenters"]
+
+    top_ep = ""
+    if n_epi > 0 and not epi["epicenter_df"].empty:
+        te = epi["epicenter_df"].iloc[0]
+        top_ep = (f"EP-{int(te['cluster_id'])+1} "
+                  f"(triage {te['triage_score']:.4f}, {te['n_nodes']} nodes) "
+                  f"di koordinat ({te['centroid_lat']:.6f}, {te['centroid_lon']:.6f})")
+
+    action1 = (
+        f"Kerahkan tim drainase darurat ke {n_vuln:,} titik jalan berisiko tinggi "
+        f"di wilayah {area}, diprioritaskan pada epikenter {top_ep}."
+        if top_ep else
+        f"Kerahkan tim drainase darurat ke {n_vuln:,} titik jalan berisiko tinggi di wilayah {area}."
+    )
+    action2 = (
+        f"Tingkatkan status siaga ke level {tier} — SFP {sfp:.2f}% dengan stressor cuaca "
+        f"{weather} (bobot {stressor:.2f}) dan penalti resiliensi +{pen_pct:.0f}%."
+    )
+    action3 = (
+        f"Laksanakan evakuasi preventif pada klaster elevasi rendah. "
+        f"Resiliensi jaringan jalan: {res:.4f} "
+        f"(penurunan efisiensi {casc['eff_degradation']*100:.1f}%)."
+    )
+    action4 = (
+        f"Koordinasikan {n_epi} epikenter DBSCAN sebagai titik pos komando lapangan."
+        if n_epi > 0 else
+        "Pantau seluruh wilayah secara berkala setiap 2 jam."
+    )
+    offline_note = (
+        "\nCatatan: Analisis dijalankan dalam mode offline — data cuaca BMKG tidak tersedia."
+        if offline_mode else ""
+    )
+
+    if doc_lang == "English":
+        return f"""EMERGENCY WORK ORDER (DISASTER RESPONSE)
+SPK No.: BPBD-DKI/{today.replace(' ', '-')}/EMG
+Date   : {today}
+Issued : BPBD DKI Jakarta
+
+SITUATIONAL ANALYSIS
+GAT flood vulnerability analysis for {area}, DKI Jakarta identifies {n_vuln:,} of {n_total:,} \
+road-network nodes ({risk['exposure']*100:.1f}%) as high-risk. Current weather: {weather} \
+(stressor weight {stressor:.2f}). Scenario Flood Percentage (SFP): {sfp:.2f}% — \
+Risk Tier: {tier}. Model accuracy: F1={f1:.4f}, AUC-ROC={auc:.4f}. \
+Network resilience score: {res:.4f}. DBSCAN identified {n_epi} epicenter cluster(s).{offline_note}
+
+FIELD EXECUTION INSTRUCTIONS
+1. {action1}
+2. {action2}
+3. {action3}
+4. {action4}
+
+LEGAL BASIS
+This order is issued pursuant to UU No. 24 Tahun 2007 tentang Penanggulangan Bencana \
+and applicable regional emergency protocols.
+
+Signed,
+[Name Placeholder]
+Head of BPBD DKI Jakarta"""
+    else:
+        return f"""SURAT PERINTAH KERJA (TINDAKAN DARURAT)
+Nomor  : BPBD-DKI/{today.replace(' ', '-')}/EMG
+Tanggal: {today}
+Penerbit: BPBD DKI Jakarta
+
+ANALISIS SITUASI
+Analisis kerentanan banjir GAT untuk wilayah {area}, DKI Jakarta mengidentifikasi \
+{n_vuln:,} dari {n_total:,} titik jaringan jalan ({risk['exposure']*100:.1f}%) sebagai \
+berisiko tinggi. Cuaca saat ini: {weather} (bobot stressor {stressor:.2f}). \
+Skenario Persentase Banjir (SFP): {sfp:.2f}% — Tingkat Risiko: {tier}. \
+Akurasi model: F1={f1:.4f}, AUC-ROC={auc:.4f}. \
+Skor resiliensi jaringan: {res:.4f}. \
+DBSCAN mengidentifikasi {n_epi} klaster epikenter.{offline_note}
+
+INSTRUKSI PELAKSANAAN LAPANGAN
+1. {action1}
+2. {action2}
+3. {action3}
+4. {action4}
+
+DASAR HUKUM
+Surat perintah ini diterbitkan berdasarkan UU No. 24 Tahun 2007 tentang \
+Penanggulangan Bencana dan protokol darurat daerah yang berlaku.
+
+Ditandatangani,
+[Nama Pengirim]
+Kepala BPBD DKI Jakarta"""
+
+
 def _zoom_from_dist(d: int) -> int:
     return 15 if d<=1500 else 14 if d<=2500 else 13 if d<=4000 else 12
 
@@ -342,17 +521,11 @@ def _approx_closeness(Gu, k: int = 500, seed: int = 42) -> dict:
 
 def compute_graph_features(G):
     from concurrent.futures import ThreadPoolExecutor
-
-    # Pre-build undirected copy once — reused by both clustering and closeness
     Gu = nx.Graph(G.to_undirected())
-
-    # Degree is O(V), no sampling needed — run immediately on main thread
     dc = nx.degree_centrality(G)
-
     def _bc(): return nx.betweenness_centrality(G, k=50, normalized=True, seed=42)
     def _cc(): return _approx_closeness(Gu, k=500, seed=42)
     def _pr(): return nx.pagerank(G, alpha=.85, max_iter=100, tol=1e-4)
-
     with ThreadPoolExecutor(max_workers=3) as pool:
         f_bc = pool.submit(_bc)
         f_cc = pool.submit(_cc)
@@ -360,10 +533,7 @@ def compute_graph_features(G):
         bc = f_bc.result()
         cc = f_cc.result()
         pr = f_pr.result()
-
-    # clustering runs on the already-built Gu — no second graph conversion
     clc = nx.clustering(Gu)
-
     for n in G.nodes():
         G.nodes[n].update({"degree_centrality":float(dc[n]),"betweenness_centrality":float(bc[n]),
                            "closeness_centrality":float(cc[n]),"clustering_coefficient":float(clc[n]),"pagerank":float(pr[n])})
@@ -481,12 +651,8 @@ def run_dbscan(G, eps_m=DBSCAN_EPS_M, min_pts=DBSCAN_MIN_PTS):
     for i,nid in enumerate(nids): G.nodes[nid]["epicenter_cluster"]=labels[i]
     return {"epicenter_df":edf,"n_epicenters":len(clusters),"n_noise":n_noise,"labels":labels,"node_ids":nids,"coords":cd}
 
-# ── [v3-1] BMKG with adm4, graceful multi-level fallback ──────────────────────
-# ── [b2g-1] Extended with offline_mode parameter ──────────────────────────────
 @st.cache_data(show_spinner=False, ttl=900)
 def fetch_bmkg(adm4: str, offline_mode: bool = False) -> tuple[str, float, bool, str]:
-    # b2g-1: when offline mode is toggled, skip the API entirely and use a
-    # high stressor weight to simulate disaster-condition API blackout
     if offline_mode:
         return "Hujan Lebat (Edge Cache)", WEATHER_WEIGHTS["Hujan Lebat"], False, "offline_forced"
     try:
@@ -507,31 +673,20 @@ def fetch_bmkg(adm4: str, offline_mode: bool = False) -> tuple[str, float, bool,
     except Exception:
         return "Berawan", WEATHER_WEIGHTS["Berawan"], False, "offline"
 
-# ── [b2g-2] Azure Hybrid Sync ────────────────────────────────────────────────
 def _try_azure_sync(area: str, weather: str, risk_sfp: float, n_epicenters: int) -> str:
-    """
-    Silently attempts to sync a summary payload to Azure Blob Storage.
-    Only runs if AZURE_STORAGE_CONNECTION_STRING is set in environment.
-    Returns a status string for optional display; never raises.
-    """
     conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
     if not conn_str:
-        return "no_env"   # env var not set — skip entirely, no error
+        return "no_env"
     try:
         from azure.storage.blob import BlobServiceClient
         blob_service_client = BlobServiceClient.from_connection_string(conn_str)
         container_client = blob_service_client.get_container_client("resilia-b2g-backup")
-        payload = {
-            "area": area, "weather": weather,
-            "sfp": risk_sfp, "n_epicenters": n_epicenters,
-        }
-        blob_client = container_client.get_blob_client(
-            blob=f"spk_{area.lower().replace(' ','_')}.json"
-        )
+        payload = {"area": area, "weather": weather, "sfp": risk_sfp, "n_epicenters": n_epicenters}
+        blob_client = container_client.get_blob_client(blob=f"spk_{area.lower().replace(' ','_')}.json")
         blob_client.upload_blob(json.dumps(payload), overwrite=True)
         return "synced"
     except Exception:
-        return "failed"   # absolute silent fallback — edge compute keeps running
+        return "failed"
 
 def compute_risk_v2(G, sw, res):
     vuln=[n for n,d in G.nodes(data=True) if d.get("vulnerability")=="High"]
@@ -542,19 +697,12 @@ def compute_risk_v2(G, sw, res):
 def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, stressor_w, show_heatmap=False):
     import random
     from folium.plugins import MarkerCluster
-
     cfg = AREA_CONFIGS[area]; tc = TIER_COLOR[tier]; zoom = _zoom_from_dist(cfg["dist"])
-
-    m = folium.Map(location=list(cfg["center"]), zoom_start=zoom,
-               tiles=None, prefer_canvas=True)
+    m = folium.Map(location=list(cfg["center"]), zoom_start=zoom, tiles=None, prefer_canvas=True)
     folium.TileLayer(
         tiles="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-        attr="CartoDB",
-        name="Filters",
-        max_zoom=19,
-        subdomains="abcd"
+        attr="CartoDB", name="Filters", max_zoom=19, subdomains="abcd"
     ).add_to(m)
-
     edge_list = list(edges.iterrows())
     if len(edge_list) > 3000:
         rng_e = random.Random(42)
@@ -562,9 +710,7 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
     for _, row in edge_list:
         folium.PolyLine([(lat, lon) for lon, lat in row.geometry.coords],
                         color="#1f6feb", weight=0.9, opacity=.25).add_to(m)
-
     node_fg = folium.FeatureGroup(name="Risk Nodes", show=True)
-    rng_n = random.Random(42)
     for node, d in G.nodes(data=True):
         s = d.get("risk_score", 0.)
         if s < 0.35: continue
@@ -577,7 +723,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
             tooltip=f"Risk {s:.3f} | Elev {d.get('elevation',0):.1f}m | POI {d.get('poi_criticality',0):.3f} | {ep}"
         ).add_to(node_fg)
     node_fg.add_to(m)
-
     if show_heatmap and vuln:
         heat_fg = folium.FeatureGroup(name="Heatmap", show=True)
         HeatMap(
@@ -586,7 +731,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
             gradient={"0.4": "#388bfd", "0.65": "#d29922", "1.0": "#f85149"}
         ).add_to(heat_fg)
         heat_fg.add_to(m)
-
     poi_fg = folium.FeatureGroup(name="POI", show=True)
     poi_cluster = MarkerCluster(
         options={"maxClusterRadius": 60, "spiderfyOnMaxZoom": True, "showCoverageOnHover": False}
@@ -601,7 +745,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
             tooltip=f'{poi["name"]} [{amenity}]'
         ).add_to(poi_cluster)
     poi_fg.add_to(m)
-
     epi_fg = folium.FeatureGroup(name="Epicenters", show=True)
     edf = epi_data.get("epicenter_df", pd.DataFrame())
     if not edf.empty:
@@ -615,9 +758,7 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
                          f'EP-{int(row["cluster_id"])+1}</div>', icon_size=(50, 22))
             ).add_to(epi_fg)
     epi_fg.add_to(m)
-
     folium.LayerControl(position="topright", collapsed=False).add_to(m)
-
     m.get_root().html.add_child(folium.Element(
         f'<div style="position:fixed;bottom:24px;left:24px;z-index:1000;background:#090e18ee;padding:14px 18px;'
         f'border:1px solid #1e2a3a;border-top:2px solid {tc};font-family:\'IBM Plex Mono\',monospace;'
@@ -631,7 +772,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         f'&#9679;<span style="color:#f85149;"> Red</span> &gt;0.55 &nbsp;'
         f'<span style="color:#484f58;">(low-risk nodes hidden)</span></div></div>'
     ))
-
     m.get_root().html.add_child(folium.Element("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap');
@@ -645,8 +785,7 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
     .leaflet-control-layers input[type="radio"],
     .leaflet-control-layers input[type="checkbox"] {accent-color: #1f6feb !important;width: 12px !important;height: 12px !important;}
     .leaflet-control-layers-base > label:first-child span {color: #58a6ff !important;}</style>"""))
-
-    return m._repr_html_()
+    return m
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 def _lbl(text, mt="16px"):
@@ -680,7 +819,6 @@ with st.sidebar:
         view_mode    = st.radio("View", ["Interactive","Static"], label_visibility="collapsed")
         show_heatmap = st.checkbox("Show risk heatmap", value=False)
 
-        # ── [b2g-1] Edge-Compute Offline Mode ─────────────────────────────────
         st.markdown("<hr style='border-color:#1e2a3a;margin:12px 0;'>", unsafe_allow_html=True)
         _lbl("Edge-Compute Control", "0")
         offline_mode = st.toggle(
@@ -718,8 +856,9 @@ with st.sidebar:
                 unsafe_allow_html=True)
 
 # ── Auto-collapse sidebar after run ───────────────────────────────────────────
-if st.session_state.pop("_collapse_sidebar", False):
-    components.html("""
+if st.session_state.get("_collapse_sidebar", False):
+    st.session_state["_collapse_sidebar"] = False
+    st.html("""
     <script>
     (function() {
         try {
@@ -737,7 +876,7 @@ if st.session_state.pop("_collapse_sidebar", False):
         } catch(e) { console.log('collapse err:', e); }
     })();
     </script>
-    """, height=0, scrolling=False)
+    """)
 
 # ── Header ─────────────────────────────────────────────────────────────────────
 st.markdown("""<div style="padding:0 0 24px 0;">
@@ -756,6 +895,10 @@ st.markdown("""<div style="padding:0 0 24px 0;">
 if run_btn:
     st.session_state.last_params = current_params
     st.session_state["_collapse_sidebar"] = True
+    if "spk_draft" in st.session_state:
+        del st.session_state["spk_draft"]
+    if st.session_state.results and "map_obj" in st.session_state.results:
+        del st.session_state.results["map_obj"]
     with st.status("Running RESELIA v2 pipeline...", expanded=True) as ps:
         try:
             st.write("**[1/8]** Fetching road network...")
@@ -777,18 +920,18 @@ if run_btn:
             st.write("**[7/8]** DBSCAN epicenters...")
             epi_res = run_dbscan(G, eps_m=dbscan_eps, min_pts=dbscan_min)
             st.write(f"  → {epi_res['n_epicenters']} epicenters · {epi_res['n_noise']} noise")
-            # b2g-1: pass offline_mode flag to fetch_bmkg
             st.write("**[8/8]** BMKG weather + SFP...")
             weather, stressor_w, live, fbr = fetch_bmkg(AREA_CONFIGS[selected_area]["adm4"], offline_mode)
             risk_res = compute_risk_v2(G, stressor_w, cascade_res["resilience_score"])
             st.write(f"  → SFP={risk_res['sfp']:.2f}% · Tier={risk_res['tier']} · Weather={weather}"
                      + (" [OFFLINE MODE]" if offline_mode else ""))
-
-            # b2g-2: Azure sync — silent, no-op when env var not set
-            azure_status = _try_azure_sync(
-                selected_area, weather, risk_res["sfp"], epi_res["n_epicenters"]
+            azure_status = _try_azure_sync(selected_area, weather, risk_res["sfp"], epi_res["n_epicenters"])
+            st.write("**[9/9]** Pre-rendering map layer...")
+            map_obj = build_map(
+                G, edges, risk_res["vulnerable"], poi_df, epi_res,
+                selected_area, weather, risk_res["sfp"], risk_res["tier"],
+                model_res["f1_w"], stressor_w, show_heatmap
             )
-
             st.session_state.results = {
                 "G":G,"nodes":nodes,"edges":edges,"feat_df":feat_df,"poi_df":poi_df,
                 "model":model_res,"cascade":cascade_res,"epi":epi_res,"risk":risk_res,
@@ -797,6 +940,7 @@ if run_btn:
                 "area":selected_area,"view_mode":view_mode,"show_heatmap":show_heatmap,
                 "flood_threshold":flood_threshold,"dbscan_eps":dbscan_eps,
                 "dbscan_min":dbscan_min,"cascade_rounds":cascade_rounds,
+                "map_obj":map_obj,
             }
             ps.update(label="Pipeline complete ✓", state="complete")
         except Exception as err:
@@ -813,14 +957,12 @@ if st.session_state.results:
     cascade_rounds=r.get("cascade_rounds",5); offline_mode=r.get("offline_mode",False)
     c=TIER_COLOR[risk["tier"]]; bg=TIER_BG[risk["tier"]]; bd=TIER_BORDER[risk["tier"]]
 
-    # b2g-1: Offline mode banner
     if offline_mode:
         st.markdown(
             '<div class="offline-badge">🔌 EDGE-COMPUTE OFFLINE MODE ACTIVE — '
             'BMKG API bypassed · Stressor forced to Hujan Lebat (0.85)</div>',
             unsafe_allow_html=True
         )
-    # v3-1: BMKG warning — only for real API failures, not silent unmapped or offline
     elif not r["live"]:
         fbr=r.get("fbr","offline")
         msgs={"timeout":"BMKG API timed out — using Berawan fallback (stressor 0.15).",
@@ -830,11 +972,10 @@ if st.session_state.results:
         msg=msgs.get(fbr, f"BMKG unavailable ({fbr}) — using Berawan fallback.")
         st.info(f"ℹ️ {msg}")
 
-    # b2g-2: Azure sync status — only shown when synced (no noise when not configured)
     if r.get("azure_status") == "synced":
         st.success("Azure Blob Storage sync successful.")
 
-    # v3-4: KPI Carousel
+    # KPI Carousel
     _lbl("Key Risk Indicators", "0")
     kpis=[
         ("Area",r["area"],None,""),
@@ -870,10 +1011,8 @@ if st.session_state.results:
     document.getElementById('p').onclick=function(){{o=Math.min(o+s,0);t.style.transform='translateX('+o+'px)';}};
     document.getElementById('n').onclick=function(){{var m=-(t.scrollWidth-v.offsetWidth+4);o=Math.max(o-s,m);t.style.transform='translateX('+o+'px)';}};
     </script></body></html>"""
-    components.html(ch, height=84, scrolling=False)
+    st.html(ch)
 
-
-    # Tier banner
     pen_pct=(risk["penalty"]-1.)*100
     src_label="notebook pkl" if mdl.get("model_src")=="notebook_pickle" else "🔧 trained fresh"
     offline_badge = ' &middot; <span style="color:#ff4444;">🔌 OFFLINE MODE</span>' if offline_mode else ""
@@ -891,18 +1030,16 @@ if st.session_state.results:
         "EPICENTER TRIAGE","POI IMPACT LAYER","FEATURE ANALYSIS","LLM POLICY AGENT"
     ])
 
-    # TAB 1 — Spatial Map 
+    # TAB 1 — Spatial Map
     with tab1:
         if view_mode == "Interactive":
-            if "map_html" not in r:
-                with st.spinner("Building interactive map…"):
-                    r["map_html"] = build_map(
-                        r["G"], r["edges"], risk["vulnerable"], r["poi_df"], epi,
-                        r["area"], r["weather"], risk["sfp"], risk["tier"],
-                        mdl["f1_w"], r["stressor_w"], show_heatmap
-                    )
-                    st.session_state.results = r
-            components.html(r["map_html"], height=580, scrolling=False)
+            st_folium(
+                r["map_obj"], 
+                height=580, 
+                use_container_width=True, 
+                returned_objects=[],
+                key=f"reselia_map_render_{r['area']}" 
+            )
         else:
             with st.spinner("Rendering static map…"):
                 ngdf=gpd.GeoDataFrame({"s":[r["G"].nodes[n].get("risk_score",0) for n in r["G"].nodes()]},
@@ -935,7 +1072,7 @@ if st.session_state.results:
                 plt.tight_layout()
             st.pyplot(fig, width='stretch'); plt.close(fig)
 
-    # TAB 2 — Model Evaluation 
+    # TAB 2 — Model Evaluation
     with tab2:
         _lbl("Model Benchmark","0")
         e1,e2,e3,e4,e5=st.columns(5)
@@ -995,7 +1132,7 @@ if st.session_state.results:
                 "Support":int(cr.get(cls,{}).get("support",0))} for cls in ["Low Risk","High Risk"]]),
                 width='stretch')
 
-    # TAB 3 — Cascading Failure 
+    # TAB 3 — Cascading Failure
     with tab3:
         sd=casc["sim_df"]
         _lbl("Network Resilience","0")
@@ -1025,7 +1162,7 @@ if st.session_state.results:
         st.dataframe(sd.style.format({"global_efficiency":"{:.4f}","lcc_fraction":"{:.4f}",
                                        "avg_clustering":"{:.4f}","pct_removed":"{:.1f}%"}),width='stretch')
 
-    # TAB 4 — Epicenter Triage 
+    # TAB 4 — Epicenter Triage
     with tab4:
         edf=epi["epicenter_df"]
         ep1,ep2,ep3=st.columns(3)
@@ -1124,132 +1261,91 @@ if st.session_state.results:
             fig4.patch.set_facecolor("#05090f"); plt.tight_layout()
         st.pyplot(fig4, width='stretch'); plt.close(fig4)
 
-    # ── TAB 7 — [b2g-3] LLM Policy Agent ──────────────────────────────────────
+    # TAB 7 — LLM Policy Agent
     with tab7:
         _lbl("Autonomous LLM Policy Agent — SPK Auto-Draft", "0")
         st.markdown(
             '<div style="font-family:\'IBM Plex Mono\',monospace;font-size:9px;color:#6e7681;margin-bottom:16px;">'
-            'Uses the Claude API to generate a Surat Perintah Kerja (SPK) grounded in live analysis data. '
-            'Prompt is assembled from GAT inference, DBSCAN epicenters, weather stressor, and tier.'
+            'Generates a Surat Perintah Kerja (SPK) grounded in live GAT/DBSCAN analysis data.'
             '</div>',
             unsafe_allow_html=True
         )
 
-        n_epi_t7   = epi["n_epicenters"]
-        top_ep_t7  = ""
-        top_coord  = ""
+        n_epi_t7, top_ep_t7, top_coord = epi["n_epicenters"], "", ""
         if n_epi_t7 > 0 and not epi["epicenter_df"].empty:
             te = epi["epicenter_df"].iloc[0]
             top_ep_t7 = f"EP-{int(te['cluster_id'])+1} (triage {te['triage_score']:.4f}, {te['n_nodes']} nodes)"
             top_coord = f"({te['centroid_lat']:.6f}, {te['centroid_lon']:.6f})"
 
-        # Show the data context that will be sent to the LLM
-        with st.expander("📋 Context sent to LLM (read-only)", expanded=False):
+        with st.expander("📋 Context yang dikirim ke model (read-only)", expanded=False):
             st.code(
-                f"Area: {r['area']}\n"
-                f"Risk Tier: {risk['tier']}\n"
-                f"SFP: {risk['sfp']:.2f}%\n"
+                f"Area: {r['area']}\nRisk Tier: {risk['tier']}\nSFP: {risk['sfp']:.2f}%\n"
                 f"Weather: {r['weather']} (stressor {r['stressor_w']:.2f})\n"
                 f"High-Risk Nodes: {len(risk['vulnerable']):,} / {risk['n_total']:,}\n"
                 f"GAT F1: {mdl['f1_w']:.4f}  AUC: {mdl['auc_roc']:.4f}\n"
-                f"Resilience Score: {casc['resilience_score']:.4f}\n"
-                f"DBSCAN Epicenters: {n_epi_t7}\n"
+                f"Resilience: {casc['resilience_score']:.4f}\nEpicenters: {n_epi_t7}\n"
                 f"Top Epicenter: {top_ep_t7 or 'none'} {top_coord}\n"
-                f"Offline Mode: {offline_mode}\n"
-                f"Model Source: {mdl.get('model_src','?')}",
+                f"Offline Mode: {offline_mode}\nModel Source: {mdl.get('model_src','?')}",
                 language="yaml"
             )
 
         col_lang, col_generate = st.columns([2, 1])
         with col_lang:
             doc_lang = st.radio(
-                "Bahasa dokumen",
-                ["Bahasa Indonesia", "English"],
-                horizontal=True,
-                label_visibility="visible"
+                "Bahasa dokumen", ["Bahasa Indonesia", "English"],
+                horizontal=True, label_visibility="visible"
             )
         with col_generate:
             st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
             generate_btn = st.button("🤖  Generate SPK Draft", type="primary", use_container_width=True)
 
         if generate_btn:
-            # Build a grounded prompt from live analysis data
-            if doc_lang == "Bahasa Indonesia":
-                lang_instruction = "Tulis seluruh dokumen dalam Bahasa Indonesia formal."
-                doc_title = "SURAT PERINTAH KERJA (TINDAKAN DARURAT)"
-            else:
-                lang_instruction = "Write the entire document in formal English."
-                doc_title = "EMERGENCY WORK ORDER (DISASTER RESPONSE)"
-
+            doc_title = (
+                "SURAT PERINTAH KERJA (TINDAKAN DARURAT)"
+                if doc_lang == "Bahasa Indonesia"
+                else "EMERGENCY WORK ORDER (DISASTER RESPONSE)"
+            )
+            lang_instruction = (
+                "Tulis seluruh dokumen dalam Bahasa Indonesia formal."
+                if doc_lang == "Bahasa Indonesia"
+                else "Write the entire document in formal English."
+            )
             epi_detail = (
-                f"{n_epi_t7} DBSCAN cluster(s) identified; highest-priority: {top_ep_t7} at {top_coord}."
-                if n_epi_t7 > 0 else "No DBSCAN clusters isolated (adjust ε-radius if needed)."
+                f"{n_epi_t7} DBSCAN cluster(s); highest-priority: {top_ep_t7} at {top_coord}."
+                if n_epi_t7 > 0 else "No DBSCAN clusters isolated."
             )
 
-            spk_prompt = f"""You are an urban disaster-response policy writer for the Jakarta regional government (BPBD DKI Jakarta).
+            spk_prompt = f"""You are an urban disaster-response policy writer for BPBD DKI Jakarta.
 {lang_instruction}
-
-Generate a formal Emergency Work Order (SPK) document based strictly on the following GAT + DBSCAN analysis outputs.
-Do NOT invent numbers — use only the figures provided below.
+Generate a formal Emergency Work Order (SPK) using ONLY the figures below. Do NOT invent numbers.
 
 --- ANALYSIS DATA ---
-Area              : {r['area']}, DKI Jakarta
-Risk Tier         : {risk['tier']}
-Scenario Flood %  : {risk['sfp']:.2f}%
-Weather / Stressor: {r['weather']} (weight {r['stressor_w']:.2f})
-High-Risk Nodes   : {len(risk['vulnerable']):,} of {risk['n_total']:,} road-network nodes
-GAT Model F1      : {mdl['f1_w']:.4f}  |  AUC-ROC: {mdl['auc_roc']:.4f}
-Network Resilience: {casc['resilience_score']:.4f}  (efficiency drop {casc['eff_degradation']*100:.1f}%)
-Epicenters        : {epi_detail}
-Offline Mode      : {"YES — analysis ran without live BMKG feed" if offline_mode else "NO — live BMKG telemetry used"}
+Area: {r['area']}, DKI Jakarta | Risk Tier: {risk['tier']} | SFP: {risk['sfp']:.2f}%
+Weather: {r['weather']} (stressor {r['stressor_w']:.2f}) | High-Risk Nodes: {len(risk['vulnerable']):,}/{risk['n_total']:,}
+GAT F1: {mdl['f1_w']:.4f} | AUC-ROC: {mdl['auc_roc']:.4f} | Resilience: {casc['resilience_score']:.4f}
+Efficiency drop: {casc['eff_degradation']*100:.1f}% | Epicenters: {epi_detail}
+Offline Mode: {"YES" if offline_mode else "NO"}
 --- END DATA ---
 
-The document must contain:
-1. Document header (nomor SPK, tanggal, instansi penerbit)
-2. Situational analysis paragraph (cite the exact numbers above)
-3. Numbered field execution instructions (at least 3 concrete actions tied to the epicenter locations)
-4. Legal basis (cite UU No. 24 Tahun 2007 tentang Penanggulangan Bencana)
-5. Sign-off block (Kepala BPBD DKI Jakarta, placeholder name)
+Document must include: header (nomor SPK, tanggal, instansi), situational analysis, \
+numbered field instructions (min 3), legal basis (UU No. 24/2007), sign-off block."""
 
-Keep the tone official and concise. Do not add disclaimers about AI authorship inside the document."""
-
-            with st.spinner("Generating SPK draft via Claude API…"):
-                try:
-                    resp = requests.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={"Content-Type": "application/json"},
-                        json={
-                            "model": "claude-sonnet-4-20250514",
-                            "max_tokens": 1000,
-                            "messages": [{"role": "user", "content": spk_prompt}],
-                        },
-                        timeout=60,
+            with st.spinner("Menyiapkan dokumen SPK…"):
+                spk_text = _call_openrouter(spk_prompt)
+                if not spk_text:
+                    spk_text = _generate_fallback_spk(
+                        r, risk, mdl, casc, epi, offline_mode, doc_lang
                     )
-                    resp.raise_for_status()
-                    content_blocks = resp.json().get("content", [])
-                    spk_text = "\n".join(
-                        block["text"] for block in content_blocks if block.get("type") == "text"
-                    ).strip()
+                st.session_state["spk_draft"]     = spk_text
+                st.session_state["spk_doc_title"] = doc_title
 
-                    if spk_text:
-                        st.session_state["spk_draft"] = spk_text
-                        st.session_state["spk_lang"]  = doc_lang
-                    else:
-                        st.warning("API returned an empty response — check model availability.")
-                except requests.exceptions.Timeout:
-                    st.error("Claude API timed out (>60s). Try again or check your network.")
-                except requests.exceptions.HTTPError as he:
-                    st.error(f"Claude API HTTP error: {he.response.status_code if he.response else '?'}")
-                except Exception as ex:
-                    st.error(f"Failed to call Claude API: {ex}")
-
-        # Render the stored draft (persists across reruns until next generate)
-        if "spk_draft" in st.session_state and st.session_state["spk_draft"]:
+        if st.session_state.get("spk_draft"):
+            doc_title_stored = st.session_state.get("spk_doc_title", "DOKUMEN SPK")
             st.markdown("<hr style='border-color:#1e2a3a;margin:18px 0;'>", unsafe_allow_html=True)
             st.markdown(
                 f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:8px;color:#58a6ff;'
                 f'letter-spacing:.2em;text-transform:uppercase;font-weight:700;margin-bottom:12px;">'
-                f'📄 {doc_title} — AI-GENERATED DRAFT</div>',
+                f'📄 {doc_title_stored} — DRAFT</div>',
                 unsafe_allow_html=True
             )
             st.markdown(
@@ -1260,12 +1356,15 @@ Keep the tone official and concise. Do not add disclaimers about AI authorship i
                 f'</div>',
                 unsafe_allow_html=True
             )
-            st.caption(
-                "⚠️ AI-generated draft. Review and validate with domain experts before official use. "
-                "Figures are sourced directly from the RESELIA v2 analysis run above."
-            )
+            col_cap, col_clear = st.columns([4, 1])
+            with col_cap:
+                st.caption("⚠️ Draft dokumen. Review dan validasi sebelum penggunaan resmi.")
+            with col_clear:
+                if st.button("🗑 Hapus", key="spk_clear"):
+                    st.session_state["spk_draft"]     = None
+                    st.session_state["spk_doc_title"] = ""
 
-    # ── Policy recommendation banner (unchanged from v3) ──────────────────────
+    # ── Policy recommendation banner ───────────────────────────────────────────
     n_epi=epi["n_epicenters"]; top_label=""
     if n_epi>0 and not epi["epicenter_df"].empty:
         te=epi["epicenter_df"].iloc[0]
@@ -1285,7 +1384,7 @@ Keep the tone official and concise. Do not add disclaimers about AI authorship i
     </div>""", unsafe_allow_html=True)
     st.markdown("""<div style="height:1px;background:linear-gradient(90deg,transparent,#1e2a3a 40%,#1f6feb 100%);margin-top:40px;"></div>
     <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#3d4a58;text-align:right;padding:12px 0;letter-spacing:.1em;">
-      RESELIA v2.0 / GAT+GBM · Polars · DBSCAN · NetworkX · OSM ODbL · BMKG · Claude API</div>""",
+      RESELIA v2.0 / GAT+GBM · Polars · DBSCAN · NetworkX · OSM ODbL · BMKG · OpenRouter</div>""",
                 unsafe_allow_html=True)
 
 else:
