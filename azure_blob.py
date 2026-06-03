@@ -23,3 +23,4 @@ def sync_spk_to_blob(area, weather, epicenter_count, network_drop):
         return True, "[HYBRID-CLOUD] Successfully synced SPK draft to Azure Blob Storage."
     except Exception as e:
         return False, f"[AZURE ERROR] Sync failed: {str(e)}"
+    

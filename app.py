@@ -872,6 +872,7 @@ if st.session_state.results:
     </script></body></html>"""
     components.html(ch, height=84, scrolling=False)
 
+
     # Tier banner
     pen_pct=(risk["penalty"]-1.)*100
     src_label="notebook pkl" if mdl.get("model_src")=="notebook_pickle" else "🔧 trained fresh"
