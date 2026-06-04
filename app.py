@@ -161,13 +161,13 @@ section[data-testid="stSidebar"] button[kind="header"]:hover::after {
 </style>""", unsafe_allow_html=True)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-FLOOD_THRESHOLD_M   = 2.5
-DBSCAN_EPS_M        = 350
-DBSCAN_MIN_PTS      = 5
-CRITICAL_RADIUS_M   = 300.0
-EARTH_R             = 6_371_000.0
-MODEL_PICKLE_PATH   = "Notebooks/Phase_2/resilia_gat_model.pkl"
-HIGH_RISK_THRESHOLD = 0.65
+GRAVITY_DRAINAGE_FAILURE_ELEV_M = 2.5
+SPATIAL_TRIAGE_EPSILON_M        = 350
+EPICENTER_MIN_NODES             = 5
+ASSET_ISOLATION_BUFFER_M        = 300.0
+EARTH_R                         = 6_371_000.0
+MODEL_PICKLE_PATH               = "Notebooks/Phase_2/resilia_gat_model.pkl"
+CASCADING_FAILURE_TRIGGER_PROBA = 0.65
 
 AREA_CONFIGS: dict[str, dict] = {
     "Kemayoran":         {"center":(-6.1625,106.8572),"dist":4000,"adm4":"31.71.03.1001",
@@ -420,7 +420,7 @@ def _zoom_from_dist(d: int) -> int:
     return 15 if d<=1500 else 14 if d<=2500 else 13 if d<=4000 else 12
 
 def _risk_color(s: float, stressor_w: float, elev: float = 0.) -> str:
-    if elev > FLOOD_THRESHOLD_M * 2.0:
+    if elev > GRAVITY_DRAINAGE_FAILURE_ELEV_M * 2.0:
         s = min(s, 0.40)
     adjusted = s * (0.75 + stressor_w * 0.25)
     return "#388bfd" if adjusted < 0.35 else "#d29922" if adjusted < 0.55 else "#f85149"
@@ -501,7 +501,7 @@ def inject_poi_criticality(G, poi_df: pd.DataFrame):
     poi_list=[(float(r["lat"]),float(r["lon"])) for _,r in poi_df.iterrows()]
     for node,data in G.nodes(data=True):
         nlat,nlon=float(data["y"]),float(data["x"])
-        G.nodes[node]["poi_criticality"]=round(max(0.,1.-min(_hav(nlat,nlon,p[0],p[1]) for p in poi_list)/CRITICAL_RADIUS_M),4)
+        G.nodes[node]["poi_criticality"]=round(max(0.,1.-min(_hav(nlat,nlon,p[0],p[1]) for p in poi_list)/ASSET_ISOLATION_BUFFER_M),4)
     return G
 
 def _approx_closeness(Gu, k: int = 500, seed: int = 42) -> dict:
@@ -561,7 +561,7 @@ def _gat_mp(G,nl,ni,fm,n_hops=2):
         aug=nf
     return aug
 
-def build_gat_model(G, df: pd.DataFrame, nb: dict | None, flood_threshold: float = FLOOD_THRESHOLD_M):
+def build_gat_model(G, df: pd.DataFrame, nb: dict | None, flood_threshold: float = GRAVITY_DRAINAGE_FAILURE_ELEV_M):
     nl=df["node_id"].tolist(); ni={n:i for i,n in enumerate(nl)}
     y=df["flood_label"].values.astype(np.int64)
     if nb is not None:
@@ -593,9 +593,9 @@ def build_gat_model(G, df: pd.DataFrame, nb: dict | None, flood_threshold: float
         elev = float(G.nodes[nid].get("elevation", 0))
         if elev > flood_threshold * 2.0:
             p = min(p, 0.40)
-        G.nodes[nid]["vulnerability"] = "High" if p >= HIGH_RISK_THRESHOLD else "Low"
+        G.nodes[nid]["vulnerability"] = "High" if p >= CASCADING_FAILURE_TRIGGER_PROBA else "Low"
         G.nodes[nid]["risk_score"]    = round(p, 4)
-        G.nodes[nid]["gat_pred"]      = 1 if p >= HIGH_RISK_THRESHOLD else 0
+        G.nodes[nid]["gat_pred"]      = 1 if p >= CASCADING_FAILURE_TRIGGER_PROBA else 0
     return {"clf":clf,"scaler":scaler,"feat_cols":FEAT_COLS_V2,"model_src":ms,
             "acc":acc,"f1_w":f1w,"f1_mac":f1m,"auc_roc":auc,"cv_scores":cvs,
             "conf_mat":cm,"class_rep":cr,"f1_base":f1b,"f1mac_base":f1mb,"y_test":yte,"y_pred":yp,"X_gat":Xg,"y":y}
@@ -628,7 +628,7 @@ def run_cascade(G, n_rounds=5, removal_pct=.05):
     return {"sim_df":sd,"resilience_score":res,"eff_degradation":ed,"lcc_degradation":ld,
             "baseline_eff":r0e,"baseline_lcc":r0l,"baseline_clust":r0c}
 
-def run_dbscan(G, eps_m=DBSCAN_EPS_M, min_pts=DBSCAN_MIN_PTS):
+def run_dbscan(G, eps_m=SPATIAL_TRIAGE_EPSILON_M, min_pts=EPICENTER_MIN_NODES ):
     hr=[(n,G.nodes[n]) for n in G.nodes() if G.nodes[n].get("vulnerability")=="High"]
     if not hr: return {"epicenter_df":pd.DataFrame(),"n_epicenters":0,"n_noise":0,"labels":[],"node_ids":[],"coords":np.array([])}
     cd=np.array([(d["y"],d["x"]) for _,d in hr]); nids=[n for n,_ in hr]
@@ -830,11 +830,11 @@ with st.sidebar:
 
         st.markdown("<hr style='border-color:#1e2a3a;margin:12px 0;'>", unsafe_allow_html=True)
         _lbl("Advanced Parameters", "0")
-        flood_threshold = st.slider("Flood Threshold (m)",  1.0, 5.0,  float(FLOOD_THRESHOLD_M), .1)
-        dbscan_eps      = st.slider("DBSCAN Radius (m)",    150, 800,  DBSCAN_EPS_M,             25)
-        dbscan_min      = st.slider("DBSCAN Min Samples",     3,  15,  DBSCAN_MIN_PTS,            1)
-        cascade_rounds  = st.slider("Cascade Rounds",          3,  10,  5,                         1)
-
+        flood_threshold = st.slider("Gravity Cut-off (mdpl)", 1.0, 5.0, float(GRAVITY_DRAINAGE_FAILURE_ELEV_M), 0.1)
+        dbscan_eps      = st.slider("Triage Radius (m)", 150, 800, SPATIAL_TRIAGE_EPSILON_M, 25)
+        dbscan_min      = st.slider("Epicenter Density", 3, 15, EPICENTER_MIN_NODES, 1)
+        cascade_rounds  = st.slider("Cascade Depth", 3, 10, 5, 1)
+        
         current_params = {"area":selected_area,"view":view_mode,"heatmap":show_heatmap,
                           "offline":offline_mode,"thr":flood_threshold,"eps":dbscan_eps,
                           "min_pts":dbscan_min,"rounds":cascade_rounds}
@@ -847,13 +847,30 @@ with st.sidebar:
         run_btn = st.form_submit_button(btn_label, width='stretch')
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("""<div style="margin-top:24px;padding-top:16px;border-top:1px solid #1e2a3a;">
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#6e7681;line-height:2.2;text-transform:uppercase;letter-spacing:.1em;">
-        Phase 2 Stack<br>── GAT message passing<br>── GradientBoosting clf<br>── Polars data lake<br>
-        ── OSM POI Overpass<br>── NetworkX cascade<br>── DBSCAN epicenters<br>── BMKG weather API<br>
-        ── Pickle persistence<br>── Azure Blob Storage<br>── LLM Policy Agent<br>──────────────────<br>
-        OSM / ODbL &#183; BMKG Public</div></div>""",
-                unsafe_allow_html=True)
+    st.markdown("""
+        <div style="margin-top:24px;padding-top:16px;border-top:1px dashed #30363d;">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#58a6ff;font-weight:bold;letter-spacing:.2em;text-transform:uppercase;margin-bottom:12px;">
+            System Architecture
+          </div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#8b949e;line-height:1.6;letter-spacing:.05em;">
+            <span style="color:#d29922;font-weight:600;">■ DATA INGESTION</span><br>
+            ├─ OSMnx & Overpass API<br>
+            ├─ BMKG Public Telemetry<br>
+            └─ DEMNAS Elevation Proxy<br><br>
+            <span style="color:#3fb950;font-weight:600;">■ AI & COMPUTE ENGINE</span><br>
+            ├─ Graph Attention Network (GAT)<br>
+            ├─ Gradient Boosting Clf<br>
+            ├─ DBSCAN Spatial Triage<br>
+            └─ NetworkX Cascade Sim<br><br>
+            <span style="color:#bc8cff;font-weight:600;">■ CLOUD & POLICY</span><br>
+            ├─ OpenRouter LLM Agent<br>
+            └─ Azure Blob Sync (IaC)<br>
+          </div>
+          <div style="margin-top:16px;padding:8px 0;background:#090e18;border:1px solid #1e2a3a;border-radius:4px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:7px;color:#adbac7;letter-spacing:.1em;text-transform:uppercase;">
+            DATA COMPLIANCE: ODbL • BMKG • OPENROUTER
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ── Auto-collapse sidebar after run ───────────────────────────────────────────
 if st.session_state.get("_collapse_sidebar", False):
@@ -952,8 +969,8 @@ if st.session_state.results:
     r=st.session_state.results
     risk=r["risk"]; mdl=r["model"]; casc=r["cascade"]; epi=r["epi"]
     view_mode=r.get("view_mode","Interactive"); show_heatmap=r.get("show_heatmap",False)
-    flood_threshold=r.get("flood_threshold",FLOOD_THRESHOLD_M)
-    dbscan_eps=r.get("dbscan_eps",DBSCAN_EPS_M); dbscan_min=r.get("dbscan_min",DBSCAN_MIN_PTS)
+    flood_threshold=r.get("flood_threshold",GRAVITY_DRAINAGE_FAILURE_ELEV_M)
+    dbscan_eps=r.get("dbscan_eps",SPATIAL_TRIAGE_EPSILON_M); dbscan_min=r.get("dbscan_min",EPICENTER_MIN_NODES )
     cascade_rounds=r.get("cascade_rounds",5); offline_mode=r.get("offline_mode",False)
     c=TIER_COLOR[risk["tier"]]; bg=TIER_BG[risk["tier"]]; bd=TIER_BORDER[risk["tier"]]
 
@@ -1114,7 +1131,7 @@ if st.session_state.results:
             vls=[r["G"].nodes[n].get("vulnerability","Low") for n in r["G"].nodes()]
             axes[1,1].hist([s for s,l in zip(rsc,vls) if l=="Low"],bins=40,color="#1f6feb",alpha=.7,label="Low",edgecolor="#05090f",linewidth=.3)
             axes[1,1].hist([s for s,l in zip(rsc,vls) if l=="High"],bins=40,color="#f85149",alpha=.7,label="High",edgecolor="#05090f",linewidth=.3)
-            axes[1,1].axvline(HIGH_RISK_THRESHOLD,color="#3fb950",linewidth=1.5,linestyle="--",label=f"Thr={HIGH_RISK_THRESHOLD}")
+            axes[1,1].axvline(CASCADING_FAILURE_TRIGGER_PROBA,color="#3fb950",linewidth=1.5,linestyle="--",label=f"Thr={CASCADING_FAILURE_TRIGGER_PROBA}")
             axes[1,1].set_title("Risk Score Distribution",color="#adbac7",fontfamily="monospace",fontsize=10)
             axes[1,1].legend(facecolor="#090e18",edgecolor="#1e2a3a",labelcolor="#adbac7",fontsize=8)
             elevs=[r["G"].nodes[n].get("elevation",0) for n in r["G"].nodes()]
