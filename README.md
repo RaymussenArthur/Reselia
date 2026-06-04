@@ -3,8 +3,6 @@
 > **Autonomous Triage & Cascading Failure Prediction for Urban Logistics**
 >
 > Resilience & Early-Warning System for Infrastructure & Logistic Impact Assessment
-> 
-> *Official Submission for AI Impact Challenge Datathon 2026 - Urban Resilience & Smart City*
 
 [![Streamlit App](https://img.shields.io/badge/Streamlit-Live_Dashboard-FF4B4B?style=for-the-badge&logo=streamlit)](https://resilia.streamlit.app/)
 
