@@ -2,7 +2,7 @@
 
 > Phase 2: GAT-augmented flood vulnerability assessment with cascading failure simulation, DBSCAN epicenter triage, and real-time BMKG weather stressor integration.
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://reselia.streamlit.app/)
+[![Streamlit App](logo.png)](https://reselia.streamlit.app/)
 
 ## Phase 2 Upgrades
 
