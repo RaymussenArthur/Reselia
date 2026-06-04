@@ -1,67 +1,57 @@
-# RESELIA — Urban Infrastructure Risk Engine
+# RESELIA v2.0 | B2G Spatial Intelligence Engine
 
-> Phase 2: GAT-augmented flood vulnerability assessment with cascading failure simulation, DBSCAN epicenter triage, and real-time BMKG weather stressor integration.
+> **Autonomous Triage & Cascading Failure Prediction for Urban Logistics**
+> 
+> *Official Submission for AI Impact Challenge Datathon 2026 - Urban Resilience & Smart City*
 
-[![Streamlit App](logo.png)](https://reselia.streamlit.app/)
+[![Streamlit App](https://img.shields.io/badge/Streamlit-Live_Dashboard-FF4B4B?style=for-the-badge&logo=streamlit)](https://reselia.streamlit.app/)
 
-## Phase 2 Upgrades
+RESELIA adalah mesin intelijen tata ruang (*Spatial Intelligence Engine*) berbasis *Business-to-Government* (B2G) yang dirancang untuk mencegah kelumpuhan logistik kota akibat anomali cuaca ekstrem. Menggeser paradigma dari "dasbor pemetaan banjir statis", RESELIA mengorkestrasi tiga lapisan *Artificial Intelligence* (AI) untuk memprediksi probabilitas efek domino (*Cascading Failure*) pada infrastruktur kritis.
 
-| # | Module | Phase 1 | Phase 2 |
-|---|--------|---------|---------|
-| 1 | **Core AI** | Random Forest (tabular) | GAT message passing + GradientBoosting |
-| 2 | **Elevation Model** | Coordinate approximation | DEMNAS-calibrated Polars backend |
-| 3 | **Feature Matrix** | 3 graph centrality features | 7 features incl. POI criticality, clustering, PageRank |
-| 4 | **Risk Score** | Static exposure × stressor | SFP with network resilience penalty |
-| 5 | **Spatial Analysis** | None | DBSCAN epicenter triage |
-| 6 | **Network Analysis** | None | Cascading failure simulation (NetworkX) |
-| 7 | **POI Layer** | None | OSM critical infrastructure fusion (Overpass API) |
+## The "AI Triad" & Cloud Architecture
 
-## Stack
+RESELIA tidak mengandalkan model *Machine Learning* tabular konvensional. Sistem kami direkayasa dengan pendekatan **Physics-Informed Neural Networks** dan interoperabilitas **Hybrid-Cloud**:
 
-- **Road Network** — OpenStreetMap via `osmnx`
-- **AI Model** — GAT neighbourhood aggregation (2-hop attention) + `GradientBoostingClassifier`
-- **Data Backend** — `polars` for DEMNAS elevation engineering
-- **POI Layer** — Overpass API (hospitals, schools, markets, emergency services)
-- **Cascade Sim** — `networkx` progressive failure degradation
-- **Epicenter Triage** — `sklearn` DBSCAN spatial clustering
-- **Weather** — BMKG Live Public API
-- **Visualization** — Folium interactive map (heatmap layer) + Matplotlib
+1. **Graph Attention Network (GAT):** Memodelkan jalan raya Jakarta sebagai graf terarah. GAT menghitung atensi kerentanan (*Message Passing*) menggunakan proksi elevasi fisika (DEMNAS) dan topologi OSMnx.
+2. **DBSCAN Spatial Triage:** Algoritma *Unsupervised Learning* beroperasi dengan metrik *Haversine* untuk secara otonom mengisolasi area kerentanan kritis menjadi "Episenter", memberikan rekomendasi pengerahan alat berat BPBD yang presisi.
+3. **Autonomous LLM Policy Agent:** Menggunakan model instruksional (*OpenRouter API*) untuk merender output spasial menjadi draf Surat Perintah Kerja (SPK) secara instan.
+4. **Microsoft Azure Hybrid Sync:** Arsitektur *Graceful Degradation* (Failover). Menggunakan `azure.storage.blob` sebagai repositori *Data Lake* asinkron untuk sinkronisasi draf kebijakan B2G dengan kepastian *Zero-Downtime*.
 
-## Local Run
+## Enterprise Capabilities (v2.0)
 
+- **Offline Mode Failover:** Sistem inferensi dieksekusi 100% secara lokal (*Edge Compute*). Jika API cuaca publik terputus saat bencana (Blackout), sistem menyimulasikan skenario *stressor* maksimum tanpa *crash*.
+- **Cascading Failure Simulation:** Menggunakan algoritma pemangkasan node (`NetworkX`) iteratif untuk menghitung degradasi efisiensi jaringan (*Network Efficiency Drop*) saat urat nadi arteri lumpuh.
+- **Micro-Targeted POI Protection:** Menghitung radius isolasi spasial terhadap fasilitas vital (Rumah Sakit, Polisi, Pemadam Kebakaran) secara *real-time* via Overpass API.
+
+## Open Data Compliance & Sources
+
+Seluruh pipeline data mematuhi standar lisensi *Open Data* sesuai regulasi operasional pemerintah:
+
+| Komponen Data | Lisensi | Peran dalam Arsitektur |
+|---------------|---------|------------------------|
+| **OSMnx & Overpass API** | ODbL | Ekstraksi topologi graf jalan raya dan telemetri *Point of Interest* (Aset Kritis). |
+| **BMKG Public API** | Public | Telemetri atmosfer & proksi *weather stressor* berbasis kode administrasi level-4. |
+| **DEMNAS Proxy** | Public | Model elevasi digital (disimulasikan) untuk perhitungan ambang batas kegagalan gravitasi. |
+| **OpenRouter LLM** | API | Orkestrasi instruksional untuk *Autonomous Policy Agent* (Gemma/Mistral/Qwen). |
+
+## Active Deployment Zones (DKI Jakarta)
+
+RESELIA telah diinisialisasi untuk memantau 10 wilayah kritis logistik kota:
+`Kemayoran`, `Penjaringan`, `Cengkareng`, `Jatinegara`, `Pulo Gadung`, `Kebayoran Baru`, `Cilincing`, `Kelapa Gading`, `Grogol Petamburan`, dan `Mampang Prapatan`.
+
+## Local Deployment Instructions
+
+### 1. Prerequisites
+Pastikan Python 3.10+ telah terinstal. Eksekusi instalasi pustaka infrastruktur:
 ```bash
 pip install -r requirements.txt
+2. Environment Variables (B2G Cloud & LLM)
+Untuk mengaktifkan fitur Autonomous Policy Agent dan Azure Cloud Sync, buat berkas .env di direktori utama (atau konfigurasikan secrets di host Anda):
+OPENROUTER_API_KEY="your_openrouter_api_key"
+AZURE_STORAGE_CONNECTION_STRING="your_azure_connection_string"
+(Catatan: Jika koneksi Azure tidak ditemukan, sistem akan berjalan secara mandiri dalam Offline Mode berkat arsitektur Graceful Degradation).
+3. Initialize Dashboard
 streamlit run app.py
-```
 
-## Repo Structure
-
-```
-resilia-app/
-├── app.py                  # Main Streamlit dashboard (v2)
-├── requirements.txt        # Python dependencies
-├── packages.txt            # System-level packages (Streamlit Cloud)
-└── .streamlit/
-    └── config.toml         # Theme + server config
-```
-
-## Data Sources
-
-| Source | License | Usage |
-|--------|---------|-------|
-| OpenStreetMap via osmnx | ODbL | Road network topology |
-| Overpass API | ODbL | Critical infrastructure POIs |
-| BMKG Public API | Public | Live weather telemetry |
-| DEMNAS (simulated) | — | Micro-topographic elevation model (PoC) |
-
-## Study Areas
-
-| Area | Center | Coverage |
-|------|--------|----------|
-| Kemayoran | −6.1600, 106.8600 | 2,200 m radius |
-| Penjaringan | −6.1200, 106.8000 | 2,000 m radius |
-| Pluit | −6.1100, 106.7900 | 1,800 m radius |
-| Cengkareng | −6.1500, 106.7400 | 2,000 m radius |
-
----
-*RESELIA v2.0 — Phase 2 implementation.*
+--------------------------------------------------------------------------------
+Developed for Dicoding AI Impact Challenge 2026. Transforming static data into urban resilience.
