@@ -1,5 +1,5 @@
 """
-RESELIA v2.0 — v3 PATCH + B2G Features Merged
+RESILIA v2.0 — v3 PATCH + B2G Features Merged
 Fixes applied:
   [v3-1] BMKG: proper adm4 param, graceful fallback (no false "error" banner)
   [v3-2] Font contrast: all dim text boosted for readability
@@ -35,7 +35,7 @@ from sklearn.metrics import (f1_score, accuracy_score, roc_auc_score,
 
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="RESELIA v2", page_icon="logo.png",
+st.set_page_config(page_title="RESILIA v2", page_icon="logo.png",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Sidebar collapse button text ──────────────────────────────────────────
@@ -58,9 +58,9 @@ st.html("""
                         el.style.width = '0';
                         el.style.display = 'none';
                     });
-                    if (!btn.querySelector('.reselia-icon')) {
+                    if (!btn.querySelector('.RESILIA-icon')) {
                         var span = doc.createElement('span');
-                        span.className = 'reselia-icon';
+                        span.className = 'RESILIA-icon';
                         span.textContent = '≡';
                         span.style.cssText = 'font-size:26px;color:#58a6ff;font-family:monospace;font-weight:400;visibility:visible;display:inline;width:auto;line-height:1;';
                         btn.appendChild(span);
@@ -293,8 +293,8 @@ def _call_openrouter(prompt: str) -> str | None:
                 headers={
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
-                    "HTTP-Referer": "https://reselia.app",
-                    "X-Title": "RESELIA v2",
+                    "HTTP-Referer": "https://RESILIA.app",
+                    "X-Title": "RESILIA v2",
                 },
                 json={
                     "model": model,
@@ -765,7 +765,7 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         f'<div style="position:fixed;bottom:24px;left:24px;z-index:1000;background:#090e18ee;padding:14px 18px;'
         f'border:1px solid #1e2a3a;border-top:2px solid {tc};font-family:\'IBM Plex Mono\',monospace;'
         f'font-size:10px;color:#c9d1d9;backdrop-filter:blur(8px);">'
-        f'<div style="color:#58a6ff;font-size:8px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:10px;font-weight:700;">RESELIA v2 / GAT RISK OUTPUT</div>'
+        f'<div style="color:#58a6ff;font-size:8px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:10px;font-weight:700;">RESILIA v2 / GAT RISK OUTPUT</div>'
         f'HIGH-RISK &nbsp;<b>{len(vuln):,} nodes</b><br>MODEL &nbsp;&nbsp;<b>GAT+GBM F1={f1:.4f}</b><br>'
         f'WEATHER &nbsp;<b>{weather.upper()}</b><br>SFP &nbsp;&nbsp;&nbsp;&nbsp;<b style="color:{tc};">{sfp:.2f}%</b><br>'
         f'TIER &nbsp;&nbsp;&nbsp;&nbsp;<b style="color:{tc};">{tier}</b><br>EPICENTERS <b>{epi_data.get("n_epicenters",0)}</b><br>'
@@ -799,7 +799,7 @@ notebook_bundle = load_notebook_model()
 
 with st.sidebar:
     st.markdown("""<div style="padding:0 0 20px 0;border-bottom:1px solid #1e2a3a;margin-bottom:20px;">
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:700;color:#e6edf3;letter-spacing:.05em;">RESELIA</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:700;color:#e6edf3;letter-spacing:.05em;">RESILIA</div>
       <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#58a6ff;letter-spacing:.25em;text-transform:uppercase;margin-top:6px;">Urban Risk Engine / v2.0</div>
     </div>""", unsafe_allow_html=True)
     if notebook_bundle is not None:
@@ -900,7 +900,7 @@ if st.session_state.get("_collapse_sidebar", False):
 # ── Header ─────────────────────────────────────────────────────────────────────
 st.markdown("""<div style="padding:0 0 24px 0;">
   <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px;">
-    <span style="font-family:'IBM Plex Mono',monospace;font-size:30px;font-weight:700;color:#e6edf3;letter-spacing:-.01em;">RESELIA</span>
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:30px;font-weight:700;color:#e6edf3;letter-spacing:-.01em;">RESILIA</span>
     <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#58a6ff;letter-spacing:.22em;text-transform:uppercase;">Urban Infrastructure Risk Engine</span>
     <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#6e7681;background:#090e18;border:1px solid #1e2a3a;padding:2px 8px;letter-spacing:.12em;">v2.0</span>
   </div>
@@ -918,7 +918,7 @@ if run_btn:
         del st.session_state["spk_draft"]
     if st.session_state.results and "map_obj" in st.session_state.results:
         del st.session_state.results["map_obj"]
-    with st.status("Running RESELIA v2 pipeline...", expanded=True) as ps:
+    with st.status("Running RESILIA v2 pipeline...", expanded=True) as ps:
         try:
             st.write("**[1/8]** Fetching road network...")
             G, nodes, edges = fetch_network(selected_area)
@@ -1057,7 +1057,7 @@ if st.session_state.results:
                 height=580, 
                 use_container_width=True, 
                 returned_objects=["last_object_clicked_tooltip"],
-                key=f"reselia_map_render_{r['area']}" 
+                key=f"RESILIA_map_render_{r['area']}" 
             )
         else:
             with st.spinner("Rendering static map…"):
@@ -1403,13 +1403,13 @@ numbered field instructions (min 3), legal basis (UU No. 24/2007), sign-off bloc
     </div>""", unsafe_allow_html=True)
     st.markdown("""<div style="height:1px;background:linear-gradient(90deg,transparent,#1e2a3a 40%,#1f6feb 100%);margin-top:40px;"></div>
     <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:#3d4a58;text-align:right;padding:12px 0;letter-spacing:.1em;">
-      RESELIA v2.0 / GAT+GBM · Polars · DBSCAN · NetworkX · OSM ODbL · BMKG · OpenRouter</div>""",
+      RESILIA v2.0 / GAT+GBM · Polars · DBSCAN · NetworkX · OSM ODbL · BMKG · OpenRouter</div>""",
                 unsafe_allow_html=True)
 
 else:
     st.markdown("""<div style="text-align:center;padding:80px 0;">
       <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#1e2a3a;letter-spacing:.35em;text-transform:uppercase;margin-bottom:20px;">System Standby</div>
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:32px;font-weight:700;color:#0d1525;letter-spacing:.04em;margin-bottom:12px;">RESELIA</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:32px;font-weight:700;color:#0d1525;letter-spacing:.04em;margin-bottom:12px;">RESILIA</div>
       <div style="font-family:'IBM Plex Sans',sans-serif;font-size:14px;color:#3d4a58;max-width:480px;margin:0 auto;line-height:1.7;">
         Select a study area and configure parameters in the sidebar,<br>then press <b>▶ RUN ANALYSIS</b> to begin.</div>
       <div style="margin-top:40px;display:flex;justify-content:center;gap:16px;flex-wrap:wrap;">
