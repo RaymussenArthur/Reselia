@@ -720,7 +720,10 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         folium.CircleMarker(
             location=(d["y"], d["x"]), radius=r2, color=color, fill=True,
             fill_color=color, fill_opacity=.55 if s < 0.35 else .85,
-            tooltip=f"Risk {s:.3f} | Elev {d.get('elevation',0):.1f}m | POI {d.get('poi_criticality',0):.3f} | {ep}"
+            tooltip=folium.Tooltip(
+                f"Risk {s:.3f} | Elev {d.get('elevation',0):.1f}m | POI {d.get('poi_criticality',0):.3f} | {ep}",
+                sticky=True
+            )
         ).add_to(node_fg)
     node_fg.add_to(m)
     if show_heatmap and vuln:
@@ -732,9 +735,6 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
         ).add_to(heat_fg)
         heat_fg.add_to(m)
     poi_fg = folium.FeatureGroup(name="POI", show=True)
-    poi_cluster = MarkerCluster(
-        options={"maxClusterRadius": 60, "spiderfyOnMaxZoom": True, "showCoverageOnHover": False}
-    ).add_to(poi_fg)
     for _, poi in poi_df.iterrows():
         amenity = str(poi["amenity"])
         color = POI_COLORS.get(amenity, "#6c757d")
@@ -743,7 +743,9 @@ def build_map(G, edges, vuln, poi_df, epi_data, area, weather, sfp, tier, f1, st
             radius=7, color="#ffffff", weight=1.5,
             fill=True, fill_color=color, fill_opacity=0.9,
             tooltip=f'{poi["name"]} [{amenity}]'
-        ).add_to(poi_cluster)
+             f'{poi["name"]} [{amenity}]',
+             sticky=True
+        ).add_to(poi_fg)
     poi_fg.add_to(m)
     epi_fg = folium.FeatureGroup(name="Epicenters", show=True)
     edf = epi_data.get("epicenter_df", pd.DataFrame())
@@ -1054,7 +1056,7 @@ if st.session_state.results:
                 r["map_obj"], 
                 height=580, 
                 use_container_width=True, 
-                returned_objects=[],
+                returned_objects=["last_object_clicked_tooltip"],
                 key=f"reselia_map_render_{r['area']}" 
             )
         else:
