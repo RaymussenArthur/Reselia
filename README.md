@@ -1,16 +1,16 @@
-# RESELIA v2.0 | B2G Spatial Intelligence Engine
+# RESILIA v2.0
 
 > **Autonomous Triage & Cascading Failure Prediction for Urban Logistics**
-> 
-> *Official Submission for AI Impact Challenge Datathon 2026 - Urban Resilience & Smart City*
+>
+> Resilience & Early-Warning System for Infrastructure & Logistic Impact Assessment
 
-[![Streamlit App](https://img.shields.io/badge/Streamlit-Live_Dashboard-FF4B4B?style=for-the-badge&logo=streamlit)](https://reselia.streamlit.app/)
+[![Streamlit App](https://img.shields.io/badge/Streamlit-Live_Dashboard-FF4B4B?style=for-the-badge&logo=streamlit)](https://resilia.streamlit.app/)
 
-RESELIA adalah mesin intelijen tata ruang (*Spatial Intelligence Engine*) berbasis *Business-to-Government* (B2G) yang dirancang untuk mencegah kelumpuhan logistik kota akibat anomali cuaca ekstrem. Menggeser paradigma dari "dasbor pemetaan banjir statis", RESELIA mengorkestrasi tiga lapisan *Artificial Intelligence* (AI) untuk memprediksi probabilitas efek domino (*Cascading Failure*) pada infrastruktur kritis.
+RESILIA adalah mesin intelijen tata ruang (*Spatial Intelligence Engine*) berbasis *Business-to-Government* (B2G) yang dirancang untuk mencegah kelumpuhan logistik kota akibat anomali cuaca ekstrem. Menggeser paradigma dari "dasbor pemetaan banjir statis", RESILIA mengorkestrasi tiga lapisan *Artificial Intelligence* (AI) untuk memprediksi probabilitas efek domino (*Cascading Failure*) pada infrastruktur kritis.
 
 ## The "AI Triad" & Cloud Architecture
 
-RESELIA tidak mengandalkan model *Machine Learning* tabular konvensional. Sistem kami direkayasa dengan pendekatan **Physics-Informed Neural Networks** dan interoperabilitas **Hybrid-Cloud**:
+RESILIA tidak mengandalkan model *Machine Learning* tabular konvensional. Sistem ini direkayasa dengan pendekatan **Physics-Informed Neural Networks** dan interoperabilitas **Hybrid-Cloud**:
 
 1. **Graph Attention Network (GAT):** Memodelkan jalan raya Jakarta sebagai graf terarah. GAT menghitung atensi kerentanan (*Message Passing*) menggunakan proksi elevasi fisika (DEMNAS) dan topologi OSMnx.
 2. **DBSCAN Spatial Triage:** Algoritma *Unsupervised Learning* beroperasi dengan metrik *Haversine* untuk secara otonom mengisolasi area kerentanan kritis menjadi "Episenter", memberikan rekomendasi pengerahan alat berat BPBD yang presisi.
@@ -36,7 +36,7 @@ Seluruh pipeline data mematuhi standar lisensi *Open Data* sesuai regulasi opera
 
 ## Active Deployment Zones (DKI Jakarta)
 
-RESELIA telah diinisialisasi untuk memantau 10 wilayah kritis logistik kota:
+RESILIA telah diinisialisasi untuk memantau 10 wilayah kritis logistik kota:
 `Kemayoran`, `Penjaringan`, `Cengkareng`, `Jatinegara`, `Pulo Gadung`, `Kebayoran Baru`, `Cilincing`, `Kelapa Gading`, `Grogol Petamburan`, dan `Mampang Prapatan`.
 
 ## Local Deployment Instructions
